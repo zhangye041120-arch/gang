@@ -1,0 +1,179 @@
+from dataclasses import dataclass
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional convenience dependency
+    load_dotenv = None
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+ACTION_WHITELIST = {
+    "M1": {"page": "/pages/checkin/index", "allowed_params": frozenset()},
+    "M2": {"page": "/pages/games/index", "allowed_params": frozenset()},
+    "M3": {"page": "/pages/exercise/index", "allowed_params": frozenset()},
+    "M5": {"page": "/pages/community/index", "allowed_params": frozenset()},
+}
+ACTION_WHITELIST_VERSION = "prototype-v1-pending-java-confirmation"
+
+
+def _load_env() -> None:
+    if load_dotenv:
+        load_dotenv(PROJECT_ROOT / ".env")
+        return
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+@dataclass(frozen=True)
+class Settings:
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-v4-flash"
+    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_api_key: str = ""
+    qwen_model: str = "qwen3.7-flash-2026-07-15"
+    temperature: float = 0.3
+    max_tokens: int = 400
+    inspector_max_tokens: int = 256
+    inspector_enable_thinking: bool = False
+    inspector_escalate_on_issues: bool = True
+    live_lookup_enabled: bool = True
+    live_lookup_timeout_seconds: float = 3.0
+    live_default_city: str = "沈阳"
+    web_search_enabled: bool = True
+    web_search_provider: str = "dashscope"
+    web_search_api_key: str = ""
+    web_search_dashscope_model: str = "qwen3.7-flash-2026-07-15"
+    web_search_forced_search: bool = False
+    web_search_timeout_seconds: float = 45.0
+    web_search_max_results: int = 5
+    reminders_enabled: bool = True
+    timeout_seconds: float = 60.0
+    stream_timeout_seconds: float = 60.0
+    rag_parallel_enabled: bool = True
+    top_k: int = 3
+    knowledge_version: str = "v1"
+    embedding_provider: str = "none"
+    embedding_model: str = ""
+    embedding_dimension: int = 1536
+    knowledge_database_url: str = ""
+    prompt_version: str = "1.3.0"
+    action_decline_cooldown_hours: int = 2
+    quality_hash_salt: str = "xiaoliao-local-quality"
+    api_token: str = ""
+    api_debug_token: str = ""
+    api_port: int = 8081
+    api_test_mode: bool = False
+    api_rate_limit_per_minute: int = 60
+    api_rate_limit_per_user: int = 20
+    crisis_route: str = "unconfigured"
+    crisis_retention_days: int = 365
+    crisis_notification_attempts: int = 2
+    crisis_referral_config_path: str = ""
+    wecom_callback_token: str = ""
+    wecom_encoding_aes_key: str = ""
+    wecom_active_greeting_enabled: bool = False
+    wecom_active_greeting_max_per_day: int = 1
+    wecom_active_greeting_recent_active_hours: float = 24.0
+    wecom_dedup_retention_hours: int = 168
+    memory_confidence_threshold: float = 0.8
+    memory_max_items: int = 6
+    memory_max_chars: int = 2000
+    knowledge_path: Path = PROJECT_ROOT / "knowledge" / "CBT知识库_Agent版.md"
+    lessons_path: Path = PROJECT_ROOT / "knowledge" / "lessons.md"
+    elder_scenarios_path: Path = PROJECT_ROOT / "knowledge" / "适老生活场景.md"
+    regional_resources_path: Path = PROJECT_ROOT / "knowledge" / "地区资源参考.md"
+    health_knowledge_path: Path = PROJECT_ROOT / "knowledge" / "健康常识与药品边界.md"
+    fraud_knowledge_path: Path = PROJECT_ROOT / "knowledge" / "诈骗案例库.md"
+    leisure_knowledge_path: Path = PROJECT_ROOT / "knowledge" / "老歌戏曲与休闲.md"
+    lesson_search_top_k: int = 2
+    memory_vector_search_enabled: bool = True
+    memory_vector_min_score: float = 0.55
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        _load_env()
+        return cls(
+            deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", cls.deepseek_base_url),
+            deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            deepseek_model=os.getenv("DEEPSEEK_MODEL", cls.deepseek_model),
+            qwen_base_url=os.getenv("QWEN_BASE_URL", cls.qwen_base_url),
+            qwen_api_key=os.getenv("QWEN_API_KEY", ""),
+            qwen_model=os.getenv("QWEN_MODEL", cls.qwen_model),
+            temperature=float(os.getenv("AGENT_TEMPERATURE", "0.3")),
+            max_tokens=int(os.getenv("AGENT_MAX_TOKENS", "400")),
+            inspector_max_tokens=int(os.getenv("INSPECTOR_MAX_TOKENS", "256")),
+            inspector_enable_thinking=os.getenv("INSPECTOR_ENABLE_THINKING", "false").strip().lower() == "true",
+            inspector_escalate_on_issues=os.getenv("INSPECTOR_ESCALATE_ON_ISSUES", "true").strip().lower() == "true",
+            live_lookup_enabled=os.getenv("LIVE_LOOKUP_ENABLED", "true").strip().lower() == "true",
+            live_lookup_timeout_seconds=float(os.getenv("LIVE_LOOKUP_TIMEOUT_SECONDS", "3")),
+            live_default_city=os.getenv("LIVE_DEFAULT_CITY", "沈阳"),
+            web_search_enabled=os.getenv("WEB_SEARCH_ENABLED", "true").strip().lower() == "true",
+            web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "dashscope"),
+            web_search_api_key=os.getenv("WEB_SEARCH_API_KEY", ""),
+            web_search_dashscope_model=os.getenv("WEB_SEARCH_DASHSCOPE_MODEL", "qwen3.7-flash-2026-07-15"),
+            web_search_forced_search=os.getenv("WEB_SEARCH_FORCED_SEARCH", "false").strip().lower() == "true",
+            web_search_timeout_seconds=float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "45")),
+            web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
+            reminders_enabled=os.getenv("REMINDERS_ENABLED", "true").strip().lower() == "true",
+            timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "60")),
+            stream_timeout_seconds=float(os.getenv("AGENT_STREAM_TIMEOUT_SECONDS", "60")),
+            rag_parallel_enabled=os.getenv("RAG_PARALLEL_ENABLED", "true").strip().lower() == "true",
+            top_k=int(os.getenv("AGENT_TOP_K", "3")),
+            knowledge_version=os.getenv("KNOWLEDGE_VERSION", "v1"),
+            embedding_provider=os.getenv("EMBEDDING_PROVIDER", "none"),
+            embedding_model=os.getenv("EMBEDDING_MODEL", ""),
+            embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1536")),
+            knowledge_database_url=os.getenv("KNOWLEDGE_DATABASE_URL", ""),
+            prompt_version=os.getenv("PROMPT_VERSION", "1.2.0"),
+            action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "2")),
+            quality_hash_salt=os.getenv("QUALITY_HASH_SALT", "xiaoliao-local-quality"),
+            api_token=os.getenv("API_TOKEN", ""),
+            api_debug_token=os.getenv("API_DEBUG_TOKEN", ""),
+            api_port=int(os.getenv("API_PORT", "8081")),
+            api_test_mode=os.getenv("API_TEST_MODE", "false").strip().lower() == "true",
+            api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60")),
+            api_rate_limit_per_user=int(os.getenv("API_RATE_LIMIT_PER_USER", "20")),
+            crisis_route=os.getenv("CRISIS_ROUTE", "unconfigured"),
+            crisis_retention_days=int(os.getenv("CRISIS_RETENTION_DAYS", "365")),
+            crisis_notification_attempts=int(os.getenv("CRISIS_NOTIFICATION_ATTEMPTS", "2")),
+            crisis_referral_config_path=os.getenv("CRISIS_REFERRAL_CONFIG_PATH", ""),
+            wecom_callback_token=os.getenv("WECOM_CALLBACK_TOKEN", ""),
+            wecom_encoding_aes_key=os.getenv("WECOM_ENCODING_AES_KEY", ""),
+            wecom_active_greeting_enabled=os.getenv("WECOM_ACTIVE_GREETING_ENABLED", "false").strip().lower() == "true",
+            wecom_active_greeting_max_per_day=int(os.getenv("WECOM_ACTIVE_GREETING_MAX_PER_DAY", "1")),
+            wecom_active_greeting_recent_active_hours=float(os.getenv("WECOM_ACTIVE_GREETING_RECENT_ACTIVE_HOURS", "24")),
+            wecom_dedup_retention_hours=int(os.getenv("WECOM_DEDUP_RETENTION_HOURS", "168")),
+            memory_confidence_threshold=float(os.getenv("MEMORY_CONFIDENCE_THRESHOLD", "0.8")),
+            memory_max_items=int(os.getenv("MEMORY_MAX_ITEMS", "6")),
+            memory_max_chars=int(os.getenv("MEMORY_MAX_CHARS", "2000")),
+            memory_vector_search_enabled=os.getenv("MEMORY_VECTOR_SEARCH_ENABLED", "true").strip().lower() == "true",
+            memory_vector_min_score=float(os.getenv("MEMORY_VECTOR_MIN_SCORE", "0.55")),
+            elder_scenarios_path=os.getenv("ELDER_SCENARIOS_PATH") or cls.elder_scenarios_path,
+            regional_resources_path=os.getenv("REGIONAL_RESOURCES_PATH") or cls.regional_resources_path,
+            health_knowledge_path=os.getenv("HEALTH_KNOWLEDGE_PATH") or cls.health_knowledge_path,
+            fraud_knowledge_path=os.getenv("FRAUD_KNOWLEDGE_PATH") or cls.fraud_knowledge_path,
+            leisure_knowledge_path=os.getenv("LEISURE_KNOWLEDGE_PATH") or cls.leisure_knowledge_path,
+            lesson_search_top_k=int(os.getenv("LESSON_SEARCH_TOP_K", "2")),
+        )
+
+    def validate_live(self) -> None:
+        missing = []
+        if not self.deepseek_api_key:
+            missing.append("DEEPSEEK_API_KEY")
+        if not self.qwen_api_key:
+            missing.append("QWEN_API_KEY")
+        if missing:
+            raise RuntimeError(
+                "缺少模型 API Key: " + ", ".join(missing) + "。请先运行“配置API.bat”。"
+            )

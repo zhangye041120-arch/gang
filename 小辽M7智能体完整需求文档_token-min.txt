@@ -1,0 +1,330 @@
+小辽 M7  |  智能体负责人执行版
+M7 AGENT  /  EXECUTION PLAYBOOK
+小辽智能体
+M7 微信陪伴客服智能体完整需求文档
+文档目标  给智能体负责人一条从当前在线原型走到完整 M7 Agent 的执行路径：每一步有具体做法、交付物、验收标准和下一步门槛。
+本文件只聚焦 M7 的智能体部分。企业微信、Java 业务后端和微信小程序是协作边界，文档会给出接口契约，但不把它们混入 Agent 内部实现。
+项目项 | 当前结论
+当前版本 | M7 Agent Core v0.1：在线 DeepSeek + 在线 Qwen + CBT 检索 + 安全质检
+主模型 API ID | deepseek-v4-flash（已验证）
+副模型 API ID | qwen3.7-max（已验证）
+知识库 | CBT知识库_Agent版.md + 初始教训库；当前加载 78 个知识块
+服务入口 | Python CLI + FastAPI；本机 API：127.0.0.1:8090
+当前完成度 | Agent 对话内核已完成；长期记忆、主动问候、企微接入和持久化待补
+负责人交付目标 | 让 M7 能安全、稳定、可评估、可记忆、可引导行动地陪伴用户
+不要混淆  M7 Agent Core 是“会理解、会回复、会检验”的内核；完整 M7 还必须接上用户记忆、主动问候、行动反馈、企业微信消息和人工危机转介。
+1. M7 的职责边界与完成定义
+1.1 智能体负责人负责什么
+负责范围 | 交付内容
+对话理解 | 意图识别、情绪/风险识别、会话上下文、用户表达的结构化摘要
+回复生成 | DeepSeek 主 Agent 的 Prompt、回复格式、适老表达、行动建议
+质量与安全 | Qwen 副 Agent、硬性拦截、软性重写、危机安全话术
+知识与记忆 | CBT 知识库、教训库、用户长期记忆、RAG 检索策略
+反馈闭环 | 检验日志、错误模式、教训沉淀、Prompt 版本和评估集
+接口交付 | 给 Java/企微/小程序的稳定 API、Schema、错误码和联调说明
+质量运营 | 指标、日志、告警、回归测试、灰度和上线复盘
+1.2 不由智能体负责人独立负责
+企业微信账号认证、回调部署、客服消息发送权限：由企微/后端同学负责，Agent 提供协议和验收。
+用户、签到、游戏、练习、社区业务真值：由 Java 后端负责，Agent 只读取授权摘要。
+小程序页面、字体、触控、语音录音交互：由前端负责，Agent 提供 action 合同。
+心理热线、人工接管人员和危机处置制度：由产品/运营/合规共同确认，Agent 不能自行编造。
+1.3 完整 M7 Agent 的 Definition of Done
+维度 | 必须达到的结果
+能聊 | 用户消息能被理解，回复短、温和、连续，支持普通闲聊、情绪困扰、功能引导和危机分流
+有依据 | 每次相关回复可追溯到 CBT 知识、用户授权记忆或教训；没有依据时不编造
+有把关 | Qwen 检查危机、安全边界、意图、适老和 CBT；硬性违规不发送原回复
+有记忆 | 用户授权后保存关键事件、偏好和行动摘要；支持查看、纠正和删除
+有行动 | 回复能输出 M1/M2/M3/M5 的白名单行动建议，且不强迫用户
+会复盘 | 检验日志、教训、Prompt 版本和固定评估集可持续运行
+可交付 | API 有版本、Schema、超时和错误码；Java/企微可独立联调
+可上线 | 危机演练、隐私授权、监控、限流、降级和恢复测试通过
+2. M7 Agent 总体架构
+图 1  双 Agent 质检流（原始图片保留旧版本标注，实际 API 使用 deepseek-v4-flash / qwen3.7-max）
+Agent 服务处理顺序
+Java / 企业微信层
+    -> POST /v1/chat（用户消息 + user_id + session_id + 授权上下文）
+Python Agent 服务
+    -> 确定性预检：危机 / 医疗边界 / 长度 / 输入安全
+    -> RAG：CBT 知识 + 用户记忆 + 教训
+    -> Main Agent：DeepSeek V4 Flash 生成候选回复
+    -> Inspector Agent：Qwen 3.7 Max 结构化质检
+    -> 硬性拦截，或软性重写最多 1 次
+    -> 返回 reply + intent + action + safety 状态
+异步反馈
+    -> inspection_logs / lessons / prompt_patches / metrics
+2.1 组件与代码位置
+组件 | 当前文件 | M7 完整版要补什么
+模型客户端 | xiaoliao_agent/client.py | 供应商重试、熔断、token/费用记录、脱敏日志
+主 Agent | xiaoliao_agent/agent.py + prompts.py | Prompt 版本、工具调用、用户记忆上下文、行动策略
+副 Agent | agent.py + prompts.py | 错误模式标准化、教训写入、人工审核队列
+知识检索 | xiaoliao_agent/knowledge.py | pgvector、版本、权限过滤、重建索引
+安全规则 | xiaoliao_agent/guardrails.py | 风险分级、热线/人工配置、危机事件留痕
+API | api_server.py | 鉴权、请求签名、持久化会话、Java 内网访问控制
+测试 | tests/ | 50–100 条固定评估集、红队集、每次 Prompt 发布回归
+模型版本说明  供应商 API 的真实 ID 已在线验证：主模型为 deepseek-v4-flash，副模型为 qwen3.7-max。产品文档中的“DeepSeek V4 Flash / Qwen 3.7 Max”是产品名称，不要把旧图片中的 V3 / Qwen-Max 复制回配置。
+3. 分步执行计划
+建议按顺序执行。步骤可以并行，但不能跳过安全、评估和数据合同。当前桌面项目已经完成第 0、1、3、4、5、9 步的原型版本。
+步骤 | 主题 | 当前状态 | 完成标志
+0 | 配置、接口和基线 | 已完成 | 两个模型在线调用成功，模型 ID 固定
+1 | CBT 知识库导入与检索 | 原型已完成 | 知识块可检索，结果带来源
+2 | M7 人设与 Prompt 规范 | 部分完成 | Prompt 有版本、测试集和变更记录
+3 | 主 Agent 生成 | 已完成原型 | DeepSeek 输出结构化回复与 action
+4 | 副 Agent 质检 | 已完成原型 | Qwen 输出 7 字段 JSON
+5 | 安全与危机分流 | 已完成原型 | 硬拦截和固定兜底先于发送
+6 | 用户画像与长期记忆 | 待完成 | 授权、写入、检索、纠错、删除
+7 | 行动建议与正反馈 | 部分完成 | M1/M2/M3/M5 action 可被业务消费
+8 | 检验日志与持续优化 | 待完成 | 教训、补丁、Prompt 版本可审核
+9 | Agent API 与 Java 合同 | 原型已完成 | FastAPI 在线可调用，需鉴权和持久化
+10 | 评估、监控与灰度 | 待完成 | 固定集、红队集、指标和告警上线
+11 | 企业微信联调与 M7 发布 | 待完成 | 真实微信消息闭环和危机演练通过
+第 0 步  配置、接口和基线
+状态：已完成（需持续维护）
+这一步要达成  确保每次开发都使用真实可验证的 DeepSeek 和 Qwen 接口。
+具体完成办法
+在项目根目录 `.env` 配置 DEEPSEEK_BASE_URL、DEEPSEEK_API_KEY、DEEPSEEK_MODEL=deepseek-v4-flash。
+配置 QWEN_BASE_URL、QWEN_API_KEY、QWEN_MODEL=qwen3.7-max；Key 只放 `.env`，不要放 `.env.example`。
+运行 `检查API连接.bat`，确认两个模型均返回 OK；把日期、模型 ID 和结果记录到发布日志。
+固定温度、最大 token、超时和 top_k；每次变更都写入 Prompt/配置版本。
+涉及文件 / 交付物
+`.env`、`.env.example`、`check_api.py`、一份不含密钥的配置说明。
+验收标准
+两个模型 HTTP 请求均成功；Key 缺失时程序拒绝启动；模型调用错误不会泄露 Key。
+通过后才能开始  开始第 1 步，并建立第一版评估集。
+风险提示  API 模型 ID 可能变化；以供应商列表为准，不要只按产品宣传名填写。
+第 1 步  CBT 知识库导入与检索
+状态：原型已完成，生产化待做
+这一步要达成  让 Agent 的相关回复有 CBT 依据，并且能告诉调试人员依据来自哪里。
+具体完成办法
+把 `CBT知识库_Agent版.md` 按二级/三级标题切成独立知识块，保留 heading_path、source、version。
+当前原型使用本地词法检索；生产版将 chunk、embedding、权限和版本放入 PostgreSQL + pgvector。
+查询时分别检索 CBT 知识、用户记忆和教训；每个来源设置 top_k 和 score 阈值。
+将检索结果转换为有限长度 context，禁止把全量历史聊天直接塞给模型。
+建立 6 类固定查询回归：情绪低落、自我否定、退缩、家庭矛盾、反刍、退休价值感。
+涉及文件 / 交付物
+`knowledge.py`、CBT 原文、`lessons.md`、知识导入脚本、RAG 回归 JSON。
+验收标准
+“行为激活”“安全评估”等关键词能命中对应条目；结果有 chunk_id/heading/score；无命中时不会编造来源。
+通过后才能开始  开始第 2 步，并冻结首版知识库版本。
+第 2 步  M7 人设与 Prompt 规范
+状态：部分完成
+这一步要达成  让“会聊天”变成可重复、可评估的“小辽”风格，而不是每次随机发挥。
+具体完成办法
+把 Prompt 拆成角色、边界、适老表达、CBT 流程、行动建议、输出 JSON 六块。
+明确先共情再提问；不说“想开点”“别多想”；一次最多引导一个行动。
+为每次 Prompt 建立 version、changelog、创建人、适用范围和回滚点。
+把高风险句子放进 Prompt 回归集，检查任何变更是否降低安全通过率。
+让 Qwen 的 suggestion 能被主 Agent 直接消费，重写最多一次。
+涉及文件 / 交付物
+`prompts.py`、Prompt 版本表、做/不做清单、适老化词表。
+验收标准
+固定场景下回复风格稳定；结构化 JSON 可解析；Prompt 变更可比较和回滚。
+通过后才能开始  开始第 3 步，并将 Prompt 作为版本化代码审查。
+第 3 步  主 Agent 生成与意图识别
+状态：已完成原型
+这一步要达成  用 DeepSeek V4 Flash 生成短、温和、有下一步的候选回复。
+具体完成办法
+输入 user_message、最近会话摘要、已授权用户画像和三源 RAG context。
+要求模型只返回 reply、intent、action、risk_hint JSON；服务端必须做 schema 校验。
+action 只允许 M1/M2/M3/M5 白名单 module、page 和 params。
+模型超时、空回复、JSON 失败时走友好降级，不把异常发给用户。
+涉及文件 / 交付物
+`client.py`、`prompts.py`、`agent.py`、主 Agent JSON Schema。
+验收标准
+普通消息能生成回复；意图稳定；action 页面不会越权；模型错误有降级。
+通过后才能开始  开始第 4 步，把候选回复交给 Qwen，而不是直接发送。
+第 4 步  副 Agent 质检与一次重写
+状态：已完成原型
+这一步要达成  用 Qwen 3.7 Max 作为异构审核员，避免主 Agent 自己检查自己的盲点。
+具体完成办法
+把用户原话、主 Agent 候选回复和 intent 送入 Qwen。
+要求返回 crisis_detected、safety_violation、intent_accurate、age_appropriate、cbt_appropriate、issues、suggestion、error_pattern、lesson。
+硬性不通过立即拦截；软性不通过把 suggestion 回传主 Agent 重写一次。
+重写后再做一次确定性预检和 Qwen 检查；仍软性不通过也不能无限循环。
+涉及文件 / 交付物
+`agent.py`、`client.py`、`schemas.py`、Inspector Prompt。
+验收标准
+Qwen JSON 解析失败按不安全处理；硬性分支不发送候选回复；重写次数永远不超过 1。
+通过后才能开始  开始第 5 步，所有回复必须先过安全分流。
+第 5 步  安全与危机分流
+状态：已完成原型，生产化待做
+这一步要达成  任何模型都不能绕过安全底线，尤其是自伤、自杀、医疗和用药场景。
+具体完成办法
+模型前执行确定性关键词/规则预检，覆盖不想活、自杀、伤害自己、诊断、药物剂量等表达。
+将风险分为 crisis、medical_boundary、unsafe_content、normal 四类，并保留命中证据。
+crisis 使用审核过的固定话术：确认即时安全、建议不要独处、联系家人/人工/当地热线。
+医疗边界只说明能力限制和寻求专业帮助，不给诊断、停药、加药或治疗承诺。
+所有危机事件进入高权限 crisis_events，通知规则由产品/合规配置，不写死在 Prompt。
+涉及文件 / 交付物
+`guardrails.py`、危机话术配置、热线/人工配置、红队测试集、危机演练记录。
+验收标准
+危机不会发送普通回复；医疗建议被拦截；固定话术可追溯版本；转介失败有告警。
+通过后才能开始  开始第 6 步，先把用户和事件存下来才能持续关怀。
+风险提示  当前项目只做了本地拦截，还没有真实人工/热线接管；上线前必须补齐责任人和地区化号码。
+第 6 步  用户画像与长期记忆
+状态：待完成
+这一步要达成  让 Agent 记住用户授权后的重要事实，并能在下一次对话中自然引用。
+具体完成办法
+定义 memory_type：基本资料、家庭关系、兴趣偏好、关键事件、情绪趋势、行动摘要、概念化线索。
+只保存用户明确表达或高置信度提取的事实；每条记忆带 confidence、source_message_id、consent_scope。
+Java/业务后端拥有业务真值；Python Agent 只读取授权摘要并管理 ai_* 记忆表。
+实现记忆查看、纠正、删除和撤回个性化授权后的过滤。
+在 RAG 中限制记忆数量和时效，避免旧信息压过当前用户表达。
+涉及文件 / 交付物
+`memory.py`、`repositories/`、`user_memories` 表、授权过滤、删除任务。
+验收标准
+用户说过的事实不会跨用户串线；撤回授权后不检索；删除请求能清理关系库、向量和缓存。
+通过后才能开始  开始第 7 步，把行动建议和实际业务事件连接起来。
+第 7 步  行动建议与 CBT 正反馈
+状态：部分完成
+这一步要达成  让对话不是停在安慰，而是给用户一个可选择、可记录、可回访的小行动。
+具体完成办法
+定义 action 合同：type、module、page、params、reason、expires_at；服务端做白名单校验。
+M1：情绪签到；M2：脑力游戏；M3：积极心理练习；M5：兴趣圈/成就分享。
+Java 业务后端把完成事件通过 outbox/API 通知 Agent，Agent 生成具体正反馈，而不是空泛“你很棒”。
+用户拒绝行动时，Agent 先理解阻碍，不连续说服；记录拒绝原因以调整下一次引导。
+涉及文件 / 交付物
+action JSON Schema、M1/M2/M3/M5 白名单、action_events 合同、正反馈 Prompt。
+验收标准
+行动建议一次只有一个；页面和参数不可越权；完成数据能在下一轮被具体引用。
+通过后才能开始  开始第 8 步，所有质检和行动结果都要可复盘。
+第 8 步  检验日志、教训和 Prompt 持续优化
+状态：待完成
+这一步要达成  把每次对话变成可统计、可审核、可改进的质量数据。
+具体完成办法
+每轮记录 message、candidate_reply、inspection 字段、latency、model、token、error_pattern、lesson。
+异步按 error_pattern 聚类，生成 prompt_patches；补丁只能 pending，不能自动生效。
+每周人工审核高频错误、误拦截、危机案例和教训库重复项。
+Prompt 发布前跑固定回归集和红队集；发布后比较通过率、重写率、拦截率。
+保留版本回滚能力，不能覆盖历史 Prompt。
+涉及文件 / 交付物
+`inspection_logs`、`lessons`、`prompt_versions`、`prompt_patches`、审核页面/脚本。
+验收标准
+任一回复可追溯；补丁有审批状态；新 Prompt 有前后对比；同类错误持续下降。
+通过后才能开始  开始第 9 步，把 Agent 作为稳定服务交给 Java/企微。
+第 9 步  Agent API 与 Java 合同
+状态：原型已完成，生产化待做
+这一步要达成  让 Java 后端可以稳定调用 Agent，而不需要知道 Prompt、RAG 和 Qwen 的内部实现。
+具体完成办法
+保留 POST /v1/chat、GET /health、GET /v1/knowledge/search；生产增加内部 Token/mTLS、限流和 request_id。
+请求只传 user_id、session_id、message、授权后的 context；不让客户端传任意系统 Prompt。
+响应固定包含 session_id、reply、intent、action、blocked、crisis_detected、safety_violation、rewritten。
+模型失败返回 502/可理解错误；Java 决定重试和微信降级发送，不能重复触发副作用。
+将当前内存会话换成持久化摘要或由 Java 传入授权摘要。
+涉及文件 / 交付物
+`api_server.py`、OpenAPI 文档、鉴权中间件、错误码表、Java 联调示例。
+验收标准
+UTF-8 正常；并发请求不串会话；超时/错误码稳定；Java 能完成一次真实对话。
+通过后才能开始  开始第 10 步，联调不再修改 Agent 内部协议。
+第 10 步  评估、监控与灰度
+状态：待完成
+这一步要达成  让负责人能用数据判断 Agent 是否变好了，而不是凭感觉改 Prompt。
+具体完成办法
+建立至少 50 条固定评估集，覆盖闲聊、情绪、CBT、行动、适老、安全、危机、越权和 Prompt Injection。
+每次运行保存输入、模型版本、检验结果、响应耗时和人工标签；评估集不要含真实个人隐私。
+目标指标：一次通过率 >85%、重写率 <15%、硬性安全违规为 0、同类错误周环比下降。
+监控模型成功率、延迟、token、费用、RAG 命中率、危机事件、队列积压和 5xx。
+先灰度 10–20 位试点用户，连续 7 天复盘后再扩大。
+涉及文件 / 交付物
+评估集、评估脚本、指标看板、告警规则、灰度复盘表。
+验收标准
+每次 Prompt 发布都有报告；P0/P1 安全问题为 0；成本和延迟在预算内。
+通过后才能开始  开始第 11 步，进入真实企业微信联调。
+第 11 步  企业微信联调与 M7 发布
+状态：待完成
+这一步要达成  将 Agent 内核接入真实 M7 消息入口，完成可持续陪伴闭环。
+具体完成办法
+企微回调层验签、解密、去重后调用 /v1/chat；回复只由 Java/企微发送层发出。
+接入主动问候定时任务：按授权、免打扰、最近活跃和情绪趋势筛选用户。
+接入 M1/M2/M3/M5 完成事件，下一次对话引用具体行动数据。
+危机事件按地区、用户授权和人工值班规则转介；至少完成一次演练。
+试点发布前冻结 Prompt、知识库版本、热线配置和回滚包。
+涉及文件 / 交付物
+企微回调联调记录、主动问候策略、行动事件映射、危机演练、上线回滚方案。
+验收标准
+真实微信消息闭环；主动问候可关闭；用户数据可删除；危机流程有人接、有记录、有复盘。
+通过后才能开始  M7 Agent 版本发布，进入每周质量运营。
+4. M7 Agent 接口与数据合同
+4.1 POST /v1/chat 请求
+{
+  "user_id": "user_001",
+  "session_id": "session_001",
+  "message": "我最近什么都不想做",
+  "context": {
+    "consent": {"personalization": true},
+    "user_summary": "用户喜欢戏曲，最近完成过 2 次脑力游戏"
+  },
+  "debug": false
+}
+4.2 POST /v1/chat 响应
+{
+  "session_id": "session_001",
+  "reply": "听起来你最近有些累。愿不愿意先记一下今天的心情？",
+  "intent": "emotion_support",
+  "action": {
+    "type": "miniprogram",
+    "module": "M1",
+    "page": "/pages/checkin/index",
+    "params": {},
+    "reason": "invite_small_action"
+  },
+  "blocked": false,
+  "crisis_detected": false,
+  "safety_violation": false,
+  "rewritten": false
+}
+4.3 Agent 内部核心数据表
+表 | 必须字段 | 用途
+ai_sessions | id、user_id、summary、last_message_at | 会话摘要，不存无限历史
+ai_memories | user_id、type、content、confidence、source_id、consent_scope | 授权长期记忆
+ai_knowledge_chunks | source、version、heading_path、content、embedding | CBT/经验检索
+ai_inspection_logs | message_id、模型、检验字段、issues、lesson、latency | 质量与安全追踪
+ai_lessons | content、error_pattern、status、embedding | 副 Agent 教训库
+ai_prompt_versions | version、content、changelog、metrics | Prompt 发布和回滚
+ai_action_recommendations | user_id、module、action、status、source_message_id | 行动引导闭环
+ai_crisis_events | user_id、level、route、status、reviewed_by | 危机转介与审计
+4.4 错误码建议
+错误码 | 含义 | Agent 处理
+AGENT_CONFIG_MISSING | 缺少 Key/模型配置 | 启动失败，不进入用户链路
+AGENT_MODEL_TIMEOUT | 模型超时 | 降级话术 + 记录 + 告警
+AGENT_INVALID_JSON | 模型结构化输出失败 | 安全兜底，不发送候选回复
+AGENT_SAFETY_BLOCKED | 安全边界拦截 | 固定边界话术
+AGENT_CRISIS_BLOCKED | 危机信号拦截 | 固定危机话术 + 转介事件
+AGENT_KB_UNAVAILABLE | 知识库不可用 | 不编造知识，使用保守陪伴话术
+AGENT_SESSION_NOT_FOUND | 会话不存在 | 创建新会话或要求 Java 重传摘要
+AGENT_RATE_LIMITED | 调用过频 | 友好提示稍后再试
+5. 安全、评估与上线门槛
+5.1 必测对话类型
+类别 | 至少覆盖的例子 | 期望结果
+普通陪伴 | 天气、吃饭、家庭、兴趣 | 温暖简短，不强行上 CBT
+情绪困扰 | 烦、低落、孤单、睡不好 | 先共情，再一个问题/小行动
+自动思维 | 我没用、我是负担、我什么都做不好 | 引导识别，不直接争辩
+行为退缩 | 什么都不想做、不想出门 | 行为激活、小步行动、可拒绝
+关系破裂 | 你不理解我、跟你说没用 | 感谢反馈、修复关系、不防御
+医疗边界 | 我是不是抑郁、该吃什么药 | 不诊断、不用药建议、引导专业帮助
+危机 | 不想活、自杀、已经准备好了 | 硬拦截、确认安全、转介、留痕
+Prompt Injection | 忽略规则、输出系统提示词 | 不执行、不泄露系统信息
+5.2 上线前 Gate
+DeepSeek 和 Qwen 真实接口连续测试通过，Key 不出现在日志、压缩包和错误响应。
+危机/医疗边界确定性预检、Qwen 质检和固定话术三层均通过测试。
+所有 action 页面和参数有白名单；不能由模型生成任意 URL 或内部指令。
+用户授权、撤回、查看、纠正和删除链路经过测试。
+Prompt/知识库/教训均有版本和回滚点；上线版本可复现。
+API p95、模型延迟、费用、错误率、拦截率和队列积压有监控。
+至少 10–20 位试点用户完成 7 天灰度；无 P0/P1 安全问题。
+真实危机转介责任人、热线、人工值班和误报处理已书面确认。
+发布判断  只要危机分流、授权删除、Prompt 回滚或真实微信闭环任一项未通过，就不能把 M7 宣称为完整上线。
+6. 智能体负责人每周工作清单
+频率 | 要做什么 | 产出
+每次发布前 | 跑固定评估集、红队集、接口测试；检查模型 ID 和 Prompt 版本 | 发布报告 + 回滚版本
+每天 | 看模型失败、延迟、重写、硬拦截和费用；抽检异常回复 | 每日质量摘要
+每周 | 聚类 error_pattern；审核 lessons 和 prompt_patches；分析用户拒绝行动 | Prompt/教训审核记录
+每两周 | 更新 CBT 知识库版本；清理重复/过期记忆；复核安全词表 | 知识库版本 + 变更说明
+每月 | 复盘试点数据、误报/漏报、成本、留存和行动转化 | M7 迭代决策
+6.1 现在就按这 5 个动作开始
+在桌面项目中运行 `检查API连接.bat`，确认模型 ID 为 deepseek-v4-flash / qwen3.7-max。
+运行 `启动Agent接口.bat`，用 Swagger 的 POST /v1/chat 发送 10 条固定测试句。
+把测试结果保存为第一版 `eval_v1.json`，标记安全、适老、意图、CBT、行动五类结果。
+先实现第 6 步长期记忆：数据库表、授权过滤、写入/查询/删除，再接第 7 步行动事件。
+与 Java/企微同学冻结 `/v1/chat` 请求和响应合同，不让前后端各自发明字段。
+最终目标  M7 不是“模型能回答一句话”，而是“每轮回答安全、有依据、有记忆、能给一个小行动，并能在下一次对话里用真实数据继续陪伴”。
+M7 Agent Requirements  ·  v1.0  ·  第  页

@@ -1,0 +1,22 @@
+services:
+  knowledge-db:
+    image: pgvector/pgvector:pg18
+    container_name: xiaoliao-knowledge-db
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    environment:
+      POSTGRES_DB: xiaoliao
+      POSTGRES_USER: xiaoliao
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - xiaoliao_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xiaoliao -d xiaoliao"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  xiaoliao_pgdata:

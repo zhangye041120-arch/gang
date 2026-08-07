@@ -1,0 +1,350 @@
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from threading import Lock
+
+
+@dataclass
+class MemoryRecord:
+    memory_id: str
+    user_id: str
+    memory_type: str
+    content: str
+    content_hash: str
+    confidence: float
+    source_message_id: str
+    consent_scope: str
+    valid_from: datetime
+    valid_until: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class MemoryAudit:
+    audit_id: str
+    user_id: str
+    memory_id: str
+    action: str
+    created_at: str
+
+
+class MemoryVectorIndex:
+    def __init__(self):
+        self._vectors: dict[str, list[float]] = {}
+        self._lock = Lock()
+
+    def put(self, memory_id: str, vector: list[float]) -> None:
+        with self._lock:
+            self._vectors[memory_id] = list(vector)
+
+    def delete(self, memory_id: str) -> None:
+        with self._lock:
+            self._vectors.pop(memory_id, None)
+
+    def contains(self, memory_id: str) -> bool:
+        with self._lock:
+            return memory_id in self._vectors
+
+
+class MemoryMemoryRepository:
+    def __init__(self):
+        self._rows: dict[str, MemoryRecord] = {}
+        self._lock = Lock()
+        self.audit_log: list[MemoryAudit] = []
+        self._consents: dict[str, tuple[bool, bool]] = {}
+
+    def set_consent(self, user_id: str, personalization: bool, sensitive: bool) -> None:
+        with self._lock:
+            self._consents[user_id] = (personalization, sensitive)
+
+    def get_consent(self, user_id: str) -> tuple[bool, bool]:
+        with self._lock:
+            return self._consents.get(user_id, (False, False))
+
+    def upsert(self, record: MemoryRecord) -> MemoryRecord:
+        with self._lock:
+            for current in self._rows.values():
+                if current.user_id != record.user_id or current.deleted_at is not None:
+                    continue
+                if (current.memory_type, current.source_message_id, current.consent_scope) == (
+                    record.memory_type,
+                    record.source_message_id,
+                    record.consent_scope,
+                ):
+                    current.content = record.content
+                    current.content_hash = record.content_hash
+                    current.confidence = record.confidence
+                    current.valid_from = record.valid_from
+                    current.valid_until = record.valid_until
+                    current.updated_at = record.updated_at
+                    return current
+                if current.memory_type == record.memory_type and current.content_hash == record.content_hash:
+                    return current
+            self._rows[record.memory_id] = record
+            return record
+
+    def replace(self, record: MemoryRecord) -> None:
+        with self._lock:
+            self._rows[record.memory_id] = record
+
+    def get(self, user_id: str, memory_id: str, *, include_deleted: bool = False) -> MemoryRecord:
+        with self._lock:
+            record = self._rows.get(memory_id)
+            if record is None or record.user_id != user_id or (record.deleted_at and not include_deleted):
+                raise KeyError("memory not found")
+            return record
+
+    def list_for_user(self, user_id: str, *, include_deleted: bool = False) -> list[MemoryRecord]:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            rows = [
+                item for item in self._rows.values()
+                if item.user_id == user_id
+                and (include_deleted or item.deleted_at is None)
+                and (include_deleted or item.valid_from <= now)
+                and (include_deleted or item.valid_until is None or item.valid_until > now)
+            ]
+            return sorted(rows, key=lambda item: item.updated_at, reverse=True)
+
+    def correct(self, user_id: str, memory_id: str, content: str, content_hash: str) -> MemoryRecord:
+        with self._lock:
+            record = self._rows.get(memory_id)
+            if record is None or record.user_id != user_id or record.deleted_at:
+                raise KeyError("memory not found")
+            record.content = content
+            record.content_hash = content_hash
+            record.updated_at = datetime.now(timezone.utc)
+            self._audit(user_id, memory_id, "correct")
+            return record
+
+    def soft_delete(self, user_id: str, memory_id: str) -> None:
+        with self._lock:
+            record = self._rows.get(memory_id)
+            if record is None or record.user_id != user_id:
+                return
+            if record.deleted_at is None:
+                record.content = ""
+                record.content_hash = ""
+                record.deleted_at = datetime.now(timezone.utc)
+                record.updated_at = record.deleted_at
+                self._audit(user_id, memory_id, "soft_delete")
+
+    def hard_delete(self, user_id: str, memory_id: str) -> None:
+        with self._lock:
+            record = self._rows.get(memory_id)
+            if record is None or record.user_id != user_id:
+                return
+            del self._rows[memory_id]
+            self._audit(user_id, memory_id, "hard_delete")
+
+    def _audit(self, user_id: str, memory_id: str, action: str) -> None:
+        import uuid
+
+        self.audit_log.append(MemoryAudit(
+            audit_id=uuid.uuid4().hex,
+            user_id=user_id,
+            memory_id=memory_id,
+            action=action,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        ))
+
+
+class PostgresMemoryRepository:
+    COLUMNS = (
+        "memory_id, user_id, memory_type, content, content_hash, confidence, "
+        "source_message_id, consent_scope, valid_from, valid_until, created_at, updated_at, deleted_at"
+    )
+
+    def __init__(self, database_url: str):
+        if not database_url:
+            raise ValueError("database URL is required")
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("psycopg is required") from exc
+        self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+
+    @staticmethod
+    def _record(row) -> MemoryRecord:
+        return MemoryRecord(*row)
+
+    def set_consent(self, user_id: str, personalization: bool, sensitive: bool) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO ai_memory_consents (user_id, personalization, sensitive, updated_at)
+                VALUES (%s, %s, %s, now())
+                ON CONFLICT (user_id) DO UPDATE SET
+                    personalization = EXCLUDED.personalization,
+                    sensitive = EXCLUDED.sensitive,
+                    updated_at = now()
+                """,
+                (user_id, personalization, sensitive),
+            )
+
+    def get_consent(self, user_id: str) -> tuple[bool, bool]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT personalization, sensitive FROM ai_memory_consents WHERE user_id = %s",
+                (user_id,),
+            ).fetchone()
+        return (bool(row[0]), bool(row[1])) if row else (False, False)
+
+    def upsert(self, record: MemoryRecord) -> MemoryRecord:
+        with self._connect() as connection:
+            source_row = connection.execute(
+                f"SELECT {self.COLUMNS} FROM ai_memories WHERE user_id=%s AND memory_type=%s "
+                "AND source_message_id=%s AND consent_scope=%s AND deleted_at IS NULL",
+                (record.user_id, record.memory_type, record.source_message_id, record.consent_scope),
+            ).fetchone()
+            if source_row:
+                memory_id = source_row[0]
+                row = connection.execute(
+                    f"UPDATE ai_memories SET content=%s, content_hash=%s, confidence=%s, valid_from=%s, "
+                    f"valid_until=%s, updated_at=%s, embedding=NULL WHERE memory_id=%s RETURNING {self.COLUMNS}",
+                    (record.content, record.content_hash, record.confidence, record.valid_from,
+                     record.valid_until, record.updated_at, memory_id),
+                ).fetchone()
+                return self._record(row)
+            duplicate = connection.execute(
+                f"SELECT {self.COLUMNS} FROM ai_memories WHERE user_id=%s AND memory_type=%s "
+                "AND content_hash=%s AND deleted_at IS NULL",
+                (record.user_id, record.memory_type, record.content_hash),
+            ).fetchone()
+            if duplicate:
+                return self._record(duplicate)
+            row = connection.execute(
+                f"INSERT INTO ai_memories ({self.COLUMNS}) VALUES "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                f"RETURNING {self.COLUMNS}",
+                (record.memory_id, record.user_id, record.memory_type, record.content, record.content_hash,
+                 record.confidence, record.source_message_id, record.consent_scope, record.valid_from,
+                 record.valid_until, record.created_at, record.updated_at, record.deleted_at),
+            ).fetchone()
+            return self._record(row)
+
+    def replace(self, record: MemoryRecord) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE ai_memories SET valid_until=%s, updated_at=%s WHERE memory_id=%s AND user_id=%s",
+                (record.valid_until, record.updated_at, record.memory_id, record.user_id),
+            )
+
+    def get(self, user_id: str, memory_id: str, *, include_deleted: bool = False) -> MemoryRecord:
+        suffix = "" if include_deleted else " AND deleted_at IS NULL"
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT {self.COLUMNS} FROM ai_memories WHERE user_id=%s AND memory_id=%s{suffix}",
+                (user_id, memory_id),
+            ).fetchone()
+        if not row:
+            raise KeyError("memory not found")
+        return self._record(row)
+
+    def list_for_user(self, user_id: str, *, include_deleted: bool = False) -> list[MemoryRecord]:
+        where = "user_id=%s"
+        if not include_deleted:
+            where += " AND deleted_at IS NULL AND valid_from <= now() AND (valid_until IS NULL OR valid_until > now())"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT {self.COLUMNS} FROM ai_memories WHERE {where} ORDER BY updated_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
+    def correct(self, user_id: str, memory_id: str, content: str, content_hash: str) -> MemoryRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                f"UPDATE ai_memories SET content=%s, content_hash=%s, embedding=NULL, updated_at=now() "
+                f"WHERE user_id=%s AND memory_id=%s AND deleted_at IS NULL RETURNING {self.COLUMNS}",
+                (content, content_hash, user_id, memory_id),
+            ).fetchone()
+            if not row:
+                raise KeyError("memory not found")
+            self._audit(connection, user_id, memory_id, "correct")
+            return self._record(row)
+
+    def soft_delete(self, user_id: str, memory_id: str) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "UPDATE ai_memories SET content='', content_hash='', embedding=NULL, deleted_at=now(), updated_at=now() "
+                "WHERE user_id=%s AND memory_id=%s AND deleted_at IS NULL RETURNING memory_id",
+                (user_id, memory_id),
+            ).fetchone()
+            if row:
+                self._audit(connection, user_id, memory_id, "soft_delete")
+
+    def hard_delete(self, user_id: str, memory_id: str) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "DELETE FROM ai_memories WHERE user_id=%s AND memory_id=%s RETURNING memory_id",
+                (user_id, memory_id),
+            ).fetchone()
+            if row:
+                self._audit(connection, user_id, memory_id, "hard_delete")
+
+    def update_embedding(self, memory_id: str, vector: list[float]) -> None:
+        import json
+
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE ai_memories SET embedding=%s::vector WHERE memory_id=%s AND deleted_at IS NULL",
+                (json.dumps(vector, separators=(",", ":")), memory_id),
+            )
+
+    def vector_search(
+        self,
+        user_id: str,
+        vector: list[float],
+        top_k: int = 6,
+    ) -> list[tuple[str, float]]:
+        """Return (memory_id, score) ordered by cosine similarity descending."""
+        import json
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT memory_id, 1 - (embedding <=> %s::vector) AS score
+                FROM ai_memories
+                WHERE user_id = %s
+                  AND embedding IS NOT NULL
+                  AND deleted_at IS NULL
+                  AND valid_from <= now()
+                  AND (valid_until IS NULL OR valid_until > now())
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (json.dumps(vector, separators=(",", ":")), user_id,
+                 json.dumps(vector, separators=(",", ":")), top_k),
+            ).fetchall()
+        return [(str(row[0]), float(row[1])) for row in rows]
+
+    def find_embeddings_missing(self, limit: int = 500) -> list[str]:
+        """Return memory_ids that still need an embedding vector."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT memory_id FROM ai_memories WHERE embedding IS NULL AND deleted_at IS NULL LIMIT %s",
+                (limit,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def count_embeddings(self) -> tuple[int, int]:
+        """Return (with_embedding, without_embedding) for active memories."""
+        with self._connect() as connection:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM ai_memories WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+            with_emb = connection.execute(
+                "SELECT COUNT(*) FROM ai_memories WHERE embedding IS NOT NULL AND deleted_at IS NULL"
+            ).fetchone()[0]
+        return (with_emb, max(0, total - with_emb))
+
+    @staticmethod
+    def _audit(connection, user_id: str, memory_id: str, action: str) -> None:
+        import uuid
+
+        connection.execute(
+            "INSERT INTO ai_memory_audit (audit_id, user_id, memory_id, action, created_at) VALUES (%s,%s,%s,%s,now())",
+            (uuid.uuid4().hex, user_id, memory_id, action),
+        )

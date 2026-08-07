@@ -1,0 +1,31 @@
+{
+  "version": "v2",
+  "generated_at": "2026-08-07",
+  "total_cases": 22,
+  "sources": ["cbt-agent", "kb-712886b7 (适老生活场景)", "kb-f780bca7 (地区资源参考)", "lessons"],
+  "total_chunks": 99,
+  "cases": [
+    {"case_id": "cbt_low_mood", "category": "cbt", "query": "我最近情绪低落", "expected_terms": ["情绪低落", "行为激活"]},
+    {"case_id": "cbt_self_doubt", "category": "cbt", "query": "我总觉得自己没用", "expected_terms": ["自我", "自动思维"]},
+    {"case_id": "cbt_withdrawal", "category": "cbt", "query": "我不想出门见人", "expected_terms": ["退缩", "行为激活"]},
+    {"case_id": "cbt_family_conflict", "category": "cbt", "query": "家里因为钱吵架", "expected_terms": ["家庭", "问题解决"]},
+    {"case_id": "cbt_rumination", "category": "cbt", "query": "我脑子里反复想同一件事", "expected_terms": ["反刍", "念头"]},
+    {"case_id": "cbt_retirement_value", "category": "cbt", "query": "退休后觉得自己没价值", "expected_terms": ["退休", "价值感"]},
+    {"case_id": "elder_retirement_identity", "category": "elder_scenario", "query": "退休后不知道每天做什么", "expected_terms": ["退休适应", "日常意义"]},
+    {"case_id": "elder_children_distance", "category": "elder_scenario", "query": "儿子一个月才打一次电话", "expected_terms": ["成年子女", "沟通"]},
+    {"case_id": "elder_grandchild_conflict", "category": "elder_scenario", "query": "带孙子出力不讨好", "expected_terms": ["隔代养育", "角色冲突"]},
+    {"case_id": "elder_friends_lost", "category": "elder_scenario", "query": "老朋友走的走病的病没人说话", "expected_terms": ["社交", "孤独"]},
+    {"case_id": "elder_body_decline", "category": "elder_scenario", "query": "腿脚不好哪也去不了", "expected_terms": ["身体变化", "身体机能"]},
+    {"case_id": "elder_sleep_issue", "category": "elder_scenario", "query": "晚上睡不着白天没精神", "expected_terms": ["睡眠问题", "睡眠卫生"]},
+    {"case_id": "elder_spouse_loss", "category": "elder_scenario", "query": "老伴走了快一年了", "expected_terms": ["丧偶", "哀伤"]},
+    {"case_id": "elder_small_action", "category": "elder_scenario", "query": "你说做一件小事但我什么都不想做", "expected_terms": ["一次只给一个", "行动"]},
+    {"case_id": "resource_helpline", "category": "resource", "query": "有没有老年人心理热线", "expected_terms": ["心理援助", "热线"]},
+    {"case_id": "resource_see_doctor", "category": "resource", "query": "该不该去精神科看看", "expected_terms": ["专业帮助", "医生"]},
+    {"case_id": "resource_medicine_warning", "category": "resource", "query": "医生开的药我不想吃了", "expected_terms": ["医生", "建议"]},
+    {"case_id": "resource_community", "category": "resource", "query": "附近有没有老年活动", "expected_terms": ["社区", "活动"]},
+    {"case_id": "lesson_self_doubt_style", "category": "lesson", "query": "上次你说的我没太听懂", "expected_terms": ["共情", "理解"], "min_hits": 0},
+    {"case_id": "lesson_relation_feedback", "category": "lesson", "query": "你根本不理解我", "expected_terms": ["关系反馈", "辩解"], "min_hits": 0},
+    {"case_id": "edge_nonsense", "category": "edge", "query": "xyzzy blarg 12345", "expected_terms": [], "min_hits": 0},
+    {"case_id": "edge_empty", "category": "edge", "query": "", "expected_terms": [], "min_hits": 0}
+  ]
+}

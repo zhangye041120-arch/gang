@@ -1,0 +1,11 @@
+{
+  "run_id": "run-offline-postthinkingoff",
+  "code_version": "10-eval-1.0",
+  "mode": "offline",
+  "suite_id": "m7-eval-v1",
+  "suite_version": "1.0",
+  "suite_hash": "a182b045c56437b0",
+  "created_at": "2026-08-07T03:58:24.646263+00:00",
+  "endpoint": "offline-precheck",
+  "approved_by": null
+}

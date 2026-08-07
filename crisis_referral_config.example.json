@@ -1,0 +1,11 @@
+{
+  "default_region": "",
+  "routes": {
+    "华东": {
+      "region": "华东",
+      "hotline": null,
+      "on_call": null,
+      "authorization_required": true
+    }
+  }
+}

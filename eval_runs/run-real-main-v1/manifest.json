@@ -1,0 +1,21 @@
+{
+  "run_id": "run-real-main-v1",
+  "code_version": "10-eval-1.0",
+  "mode": "direct",
+  "suite_id": "m7-eval-v1",
+  "suite_version": "1.0",
+  "suite_hash": "3bc71d7a47d636ed",
+  "created_at": "2026-08-07T02:58:16.942243+00:00",
+  "endpoint": "direct (agent.chat)",
+  "approved_by": "用户（授权）",
+  "models": {
+    "main": "deepseek-v4-flash",
+    "inspector": "qwen3.7-max"
+  },
+  "prompt_versions": {
+    "main-agent": "1.2.0",
+    "inspector": "1.2.0",
+    "rewrite": "1.2.0"
+  },
+  "knowledge_version": "v1"
+}

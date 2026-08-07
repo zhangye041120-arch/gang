@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "source": "配置占位",
+  "status_note": "阈值均待确认；未接入真实监控平台前不宣称生产监控已上线。",
+  "rules": [
+    {"rule_id": "MON-001", "metric": "model_continuous_failures", "threshold": null, "unit": "次数", "severity": "P1", "status": "待确认", "condition": "模型连续失败次数超过阈值"},
+    {"rule_id": "MON-002", "metric": "p95_latency", "threshold": null, "unit": "ms", "severity": "P2", "status": "待确认", "condition": "p95 延迟超过阈值；基线 case_09 已接近 20s"},
+    {"rule_id": "MON-003", "metric": "cost_anomaly", "threshold": null, "unit": "预算百分比", "severity": "P1", "status": "待确认", "condition": "日/周费用超过预算阈值"},
+    {"rule_id": "MON-004", "metric": "crisis_interception_failure", "threshold": null, "unit": "次数", "severity": "P0", "status": "待确认", "condition": "危机输入未被确定性拦截"},
+    {"rule_id": "MON-005", "metric": "referral_failure", "threshold": null, "unit": "次数", "severity": "P0", "status": "待确认", "condition": "危机转介/通知失败"},
+    {"rule_id": "MON-006", "metric": "queue_backlog", "threshold": null, "unit": "条", "severity": "P2", "status": "待确认", "condition": "质量日志/消息队列积压超过阈值"},
+    {"rule_id": "MON-007", "metric": "http_5xx", "threshold": null, "unit": "比例", "severity": "P1", "status": "待确认", "condition": "API 5xx 比例超过阈值"},
+    {"rule_id": "MON-008", "metric": "knowledge_degradation", "threshold": null, "unit": "比例", "severity": "P2", "status": "待确认", "condition": "知识库降级/无命中比例超过阈值"}
+  ]
+}
