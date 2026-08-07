@@ -203,11 +203,88 @@ _MODEL_INTENT_MODULES = {
     "community": "M5",
 }
 
-_AGE_PATTERNS = (
-    re.compile(r"我(?:今年|现在|已经)?\s*(\d{1,3})\s*岁(?![的岁])"),
-    re.compile(r"我今年\s*(\d{1,3})(?=[，。！？\s]|$)"),
-    re.compile(r"我已经\s*(\d{1,3})\s*岁了?"),
+_PERSONAL_FACT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"我(?:叫[^，。]{1,8})?[，,]?(?:今年|现在|已经)?\s*(\d{1,3})\s*岁(?![的岁])"
+        ),
+        "profile",
+        "用户年龄：",
+    ),
+    (
+        re.compile(
+            r"我(?:叫[^，。]{1,8})?[，,]?今年\s*(\d{1,3})(?=[，。！？\s]|$)"
+        ),
+        "profile",
+        "用户年龄：",
+    ),
+    (
+        re.compile(r"我(?:叫[^，。]{1,8})?[，,]?已经\s*(\d{1,3})\s*岁了?"),
+        "profile",
+        "用户年龄：",
+    ),
+    (re.compile(r"我(?:的名字|名字)(?:叫|是)\s*([\u4e00-\u9fa5]{2,4})"), "profile", "用户姓名："),
+    (re.compile(r"我叫\s*([\u4e00-\u9fa5]{2,4})(?![的岁])"), "profile", "用户姓名："),
+    (re.compile(r"(?:大家可以|可以)叫我\s*([\u4e00-\u9fa5]{2,4})"), "profile", "用户姓名："),
+    (re.compile(r"我是(男|女)(?:的|生)?"), "profile", "用户性别："),
+    (re.compile(r"我(?:是|来自)([\u4e00-\u9fa5]{2,8})人"), "profile", "用户籍贯："),
+    (re.compile(r"我来自([\u4e00-\u9fa5]{2,8})(?=$|[，。！？\s])"), "profile", "用户籍贯："),
+    (re.compile(r"我老家(?:在|是)([\u4e00-\u9fa5]{2,8})"), "profile", "用户籍贯："),
+    (
+        re.compile(
+            r"我(?:叫[^，。]{1,8})?[，,]?(?:退休前|以前|之前)"
+            r"(?:是|做|当过)\s*([\u4e00-\u9fa5]{2,10})"
+        ),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(r"我(?:叫[^，。]{1,8})?[，,]?退休前(?:是|做)([\u4e00-\u9fa5]{2,10})"),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(
+            r"(?:^|[，。])(?:退休前|以前|之前)(?:是|做|当过)\s*([\u4e00-\u9fa5]{2,10})"
+        ),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(r"(?:^|[，。])退休前(?:是|做)([\u4e00-\u9fa5]{2,10})"),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(
+            r"我(老伴|爱人|儿子|女儿|孙子|孙女|外孙|外孙女|哥哥|弟弟|姐姐|妹妹|"
+            r"父亲|母亲|爸爸|妈妈|老爷子|老太太)(?:叫|是|姓)\s*([\u4e00-\u9fa5]{1,4})"
+        ),
+        "family_relationship",
+        "用户家庭：",
+    ),
+    (
+        re.compile(
+            r"我(老伴|爱人|儿子|女儿|孙子|孙女|外孙|外孙女|哥哥|弟弟|姐姐|妹妹|"
+            r"父亲|母亲|爸爸|妈妈|老爷子|老太太)(?=[，。！？\s]|$)"
+        ),
+        "family_relationship",
+        "用户家庭：",
+    ),
+    (
+        re.compile(r"我(?:最喜欢|平时喜欢|喜欢|最爱|爱|闲着没事喜欢)([\u4e00-\u9fa5]{2,20})"),
+        "interest_preference",
+        "用户兴趣：",
+    ),
 )
+
+_SINGLE_VALUE_MEMORY_KEYS = frozenset({
+    "用户年龄：",
+    "用户姓名：",
+    "用户性别：",
+    "用户籍贯：",
+    "用户职业：",
+})
 
 
 def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str:
@@ -605,50 +682,75 @@ class XiaoliaoAgent:
         )
         return content, {"source": "reminder:created", "title": "提醒设置", "content": content}
 
-    def _persist_profile_memory(
+    def _extract_personal_facts(self, user_text: str) -> list[tuple[str, str, str]]:
+        facts: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for pattern, memory_type, key in _PERSONAL_FACT_RULES:
+            for match in pattern.finditer(user_text):
+                if memory_type == "family_relationship":
+                    relation = match.group(1)
+                    name = match.group(2) if match.lastindex and match.lastindex >= 2 and match.group(2) else ""
+                    content = f"{key}{relation}叫{name}" if name else f"{key}{relation}"
+                else:
+                    value = match.group(1).strip()
+                    if key == "用户年龄：":
+                        value = f"{value}岁"
+                    content = f"{key}{value}"
+                if content in seen:
+                    continue
+                seen.add(content)
+                facts.append((memory_type, key, content))
+        return facts
+
+    def _persist_personal_memory(
         self,
         user_text: str,
         user_id: str,
         request_id: str,
     ) -> None:
-        """Save explicitly stated age facts into authorized long-term memory."""
+        """Save explicitly stated personal facts into authorized long-term memory."""
         if not user_id.strip():
             return
-        age_match = None
-        for pattern in _AGE_PATTERNS:
-            age_match = pattern.search(user_text)
-            if age_match:
-                break
-        if age_match is None:
-            return
-        age = int(age_match.group(1))
-        if not 0 < age < 130:
-            return
-        key = "用户年龄："
-        content = f"{key}{age}岁"
-        try:
-            existing = [
-                record
-                for record in self.memory_service.view(user_id)
-                if record.memory_type == "profile" and record.content.startswith(key)
-            ]
-            if existing:
-                self.memory_service.correct(user_id, existing[0].memory_id, content)
-            else:
-                self.memory_service.save_candidate(
-                    user_id,
-                    MemoryCandidate(
-                        memory_type="profile",
-                        content=content,
-                        confidence=1.0,
-                        source_message_id=request_id or uuid.uuid4().hex,
-                        consent_scope="personalization",
-                        explicitly_stated=True,
-                    ),
-                )
-        except Exception:
-            # Memory extraction must never break the conversation.
-            pass
+        for index, (memory_type, key, content) in enumerate(self._extract_personal_facts(user_text)):
+            try:
+                source_message_id = f"{request_id or uuid.uuid4().hex}-{index}"
+                existing = [
+                    record
+                    for record in self.memory_service.view(user_id)
+                    if record.memory_type == memory_type and record.content.startswith(key)
+                ]
+                if existing:
+                    if any(record.content == content for record in existing):
+                        continue
+                    if key in _SINGLE_VALUE_MEMORY_KEYS:
+                        self.memory_service.correct(user_id, existing[0].memory_id, content)
+                    else:
+                        self.memory_service.save_candidate(
+                            user_id,
+                            MemoryCandidate(
+                                memory_type=memory_type,
+                                content=content,
+                                confidence=1.0,
+                                source_message_id=source_message_id,
+                                consent_scope="personalization",
+                                explicitly_stated=True,
+                            ),
+                        )
+                else:
+                    self.memory_service.save_candidate(
+                        user_id,
+                        MemoryCandidate(
+                            memory_type=memory_type,
+                            content=content,
+                            confidence=1.0,
+                            source_message_id=source_message_id,
+                            consent_scope="personalization",
+                            explicitly_stated=True,
+                        ),
+                    )
+            except Exception:
+                # Memory extraction must never break the conversation.
+                pass
 
     def _fallback_result(
         self,
@@ -821,8 +923,8 @@ class XiaoliaoAgent:
         )
         result.stage_latencies["total_ms"] = max(0, int((time.perf_counter() - started) * 1000))
         result.request_id = request_id or result.request_id or uuid.uuid4().hex
-        if personalization and not result.blocked and not result.error_code:
-            self._persist_profile_memory(user_text, user_id, result.request_id)
+        if personalization and not result.blocked and not result.crisis_detected and not result.safety_violation:
+            self._persist_personal_memory(user_text, user_id, result.request_id)
         usage_items = [
             getattr(self.main_client, "last_usage", None),
             getattr(self.inspector_client, "last_usage", None),
@@ -1069,7 +1171,7 @@ class XiaoliaoAgent:
                 final_action = None
 
         if personalization:
-            self._persist_profile_memory(
+            self._persist_personal_memory(
                 user_text,
                 user_id,
                 getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,

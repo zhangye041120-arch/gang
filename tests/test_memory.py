@@ -64,6 +64,11 @@ class EchoMainClient:
         }, ensure_ascii=False)
 
 
+class InvalidMainClient:
+    def chat(self, messages, *, json_mode=False):
+        return "这不是结构化 JSON"
+
+
 def test_default_without_consent_neither_writes_nor_reads():
     service, repository, _ = make_service()
     with pytest.raises(ConsentRequiredError):
@@ -224,6 +229,60 @@ def test_explicit_age_survives_new_conversation_with_same_user():
     )
     second_agent.chat("我今年多少岁", user_id="user-age", session_id="new-session", personalization=True)
     assert "用户年龄：60岁" in second_main.messages[-1]["content"]
+
+
+def test_explicit_personal_facts_survive_new_conversation():
+    service, repository, _ = make_service()
+    service.set_consent("user-profile", personalization=True)
+    first_main = EchoMainClient()
+    first_agent = XiaoliaoAgent(
+        Settings(),
+        main_client=first_main,
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+    first_agent.chat(
+        "我叫王阿姨，今年60岁，我是沈阳人，退休前是老师，我喜欢听京剧，我儿子叫小明",
+        user_id="user-profile",
+        personalization=True,
+    )
+    stored = service.get_context("user-profile", limit=20)
+    for snippet in (
+        "用户姓名：王阿姨",
+        "用户年龄：60岁",
+        "用户籍贯：沈阳",
+        "用户职业：老师",
+        "用户兴趣：听京剧",
+        "用户家庭：儿子叫小明",
+    ):
+        assert snippet in stored
+
+    second_main = EchoMainClient()
+    second_agent = XiaoliaoAgent(
+        Settings(),
+        main_client=second_main,
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+    second_agent.chat("你还记得我吗", user_id="user-profile", session_id="new-session", personalization=True)
+    assert "王阿姨" in second_main.messages[-1]["content"]
+    assert "沈阳" in second_main.messages[-1]["content"]
+    assert "听京剧" in second_main.messages[-1]["content"]
+
+
+def test_explicit_personal_facts_are_saved_even_when_main_model_falls_back():
+    service, repository, _ = make_service()
+    service.set_consent("user-fallback", personalization=True)
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=InvalidMainClient(),
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+    agent.chat("我叫王阿姨，今年60岁", user_id="user-fallback", personalization=True)
+    stored = service.get_context("user-fallback", limit=10)
+    assert "用户姓名：王阿姨" in stored
+    assert "用户年龄：60岁" in stored
 
 
 def test_explicit_age_is_not_saved_without_consent():
