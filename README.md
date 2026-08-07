@@ -129,6 +129,10 @@ python 运行/run_agent.py --debug
 
 完整合同见 [openapi.json](openapi.json)，错误码见 [docs/API错误码表.md](docs/API错误码表.md)，curl 与 Java 示例见 [docs/API联调示例.md](docs/API联调示例.md)。
 
+### 用户授权、摘要与删除
+
+`POST /v1/users/consent` 设置个性化授权；`GET /v1/me/summary` 返回当前授权、个人记忆摘要和最近对话事件；`POST /v1/privacy/delete-request` 发起删除，会清理用户记忆、授权和对话事件。`/v1/chat`、`/v1/chat/stream` 与兼容入口 `/chat` 每轮都会写入 `conversation_events`，消息正文只保存 `sha256` 引用，不保存原文。
+
 ## 5. RAG 与延迟
 
 知识库按 Markdown 二级到四级标题分节，正文超过 1800 字符时按 1800 字符切分并保留 180 字符重叠；chunk 使用稳定内容哈希去重。当前运行时加载 99 chunks，数据库 `ai_knowledge_chunks` 已同步 99 行且 99/99 有 1536 维 Qwen 向量。

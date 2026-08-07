@@ -86,6 +86,40 @@ def test_v1_explicit_request_repops_module_after_implicit_in_same_session():
         assert explicit.json()["action"]["module"] == "M1"
 
 
+def test_v1_consent_summary_and_privacy_delete_round_trip():
+    with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
+        consent = client.post("/v1/users/consent", json={
+            "user_id": "user_consent",
+            "personalization": True,
+            "sensitive": True,
+        }, headers=headers())
+        assert consent.status_code == 200
+        assert consent.json()["personalization"] is True
+
+        summary = client.get("/v1/me/summary", params={"user_id": "user_consent"}, headers=headers())
+        assert summary.status_code == 200
+        assert summary.json()["personalization"] is True
+
+        deleted = client.post("/v1/privacy/delete-request", json={
+            "user_id": "user_consent",
+        }, headers=headers())
+        assert deleted.status_code == 200
+        assert deleted.json()["status"] == "deleted"
+
+        after = client.get("/v1/me/summary", params={"user_id": "user_consent"}, headers=headers())
+        assert after.json()["personalization"] is False
+        assert after.json()["profile"] == []
+
+
+def test_v1_chat_logs_conversation_events_once():
+    with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
+        first = client.post("/v1/chat", json=payload(user_id="event_user"), headers=headers(idempotency="event-idem-1"))
+        second = client.post("/v1/chat", json=payload(user_id="event_user"), headers=headers(idempotency="event-idem-1"))
+        assert first.status_code == second.status_code == 200
+        events = client.app.state.user_data.repository.list_conversation_events("event_user")
+        assert len(events) == 2
+
+
 def test_v1_chat_stream_returns_sse_after_safety_pipeline():
     with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
         response = client.post(

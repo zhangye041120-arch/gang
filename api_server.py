@@ -10,7 +10,7 @@ from re import fullmatch
 from threading import Lock
 from typing import Any, Callable, Literal
 
-from fastapi import FastAPI, Request, Security
+from fastapi import FastAPI, Query, Request, Security
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -27,6 +27,11 @@ from xiaoliao_agent.api_contract import (
     V1DebugInfo,
     error_body,
     fingerprint,
+)
+from xiaoliao_agent.user_data import (
+    MemoryUserRepository,
+    PostgresUserRepository,
+    UserDataService,
 )
 
 
@@ -66,6 +71,28 @@ class ChatResponse(BaseModel):
     retrieved_contexts: list[dict[str, Any]] = Field(
         default_factory=list,
         alias="retrievedContexts",
+    )
+
+
+class ConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_:@.-]+$",
+    )
+    personalization: bool = False
+    sensitive: bool = False
+
+
+class DeleteUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_:@.-]+$",
     )
 
 
@@ -136,6 +163,27 @@ def normalize_intent(raw_intent: str, action: dict[str, Any] | None) -> Intent:
     return to_java_intent(raw_intent, action)
 
 
+def log_conversation_pair_safe(
+    user_data: Any,
+    user_id: str,
+    *,
+    user_text: str,
+    reply: str,
+    intent: str,
+    request_id: str,
+) -> None:
+    try:
+        user_data.log_conversation_pair(
+            user_id,
+            user_text=user_text,
+            reply=reply,
+            intent=intent,
+            request_id=request_id,
+        )
+    except Exception:
+        pass
+
+
 def inspection_payload(result: Any) -> dict[str, Any]:
     data = result.to_dict().get("inspection", {})
     return {
@@ -157,6 +205,7 @@ def create_app(
     api_token: str | None = None,
     debug_token: str | None = None,
     test_mode: bool = False,
+    user_data_service: Any | None = None,
 ) -> FastAPI:
     config = settings or Settings.from_env()
     if api_token is not None:
@@ -175,6 +224,18 @@ def create_app(
             config.api_rate_limit_per_minute,
             config.api_rate_limit_per_user,
         )
+        if user_data_service is not None:
+            app.state.user_data = user_data_service
+        elif config.knowledge_database_url and not effective_test_mode:
+            app.state.user_data = UserDataService(
+                PostgresUserRepository(config.knowledge_database_url),
+                memory_service=getattr(app.state.agent, "memory_service", None),
+            )
+        else:
+            app.state.user_data = UserDataService(
+                MemoryUserRepository(),
+                memory_service=getattr(app.state.agent, "memory_service", None),
+            )
         app.state.idempotency = IdempotencyCoordinator()
         yield
 
@@ -304,6 +365,14 @@ def create_app(
                 inspection=inspection_payload(result),
                 retrieved_contexts=result.sources,
             ).model_dump(by_alias=True)
+        log_conversation_pair_safe(
+            app.state.user_data,
+            payload.user_id,
+            user_text=payload.message,
+            reply=body["reply"],
+            intent=body["intent"],
+            request_id=rid,
+        )
         return json_response(200, body, rid)
 
     @app.post("/v1/chat", response_model=V1ChatResponse, responses=error_responses)
@@ -374,6 +443,14 @@ def create_app(
         ).model_dump(exclude={"debug"})
         if debug_payload is not None:
             response_body["debug"] = debug_payload.model_dump()
+        log_conversation_pair_safe(
+            app.state.user_data,
+            payload.user_id,
+            user_text=payload.message,
+            reply=response_body["reply"],
+            intent=response_body["intent"],
+            request_id=rid,
+        )
         if executing:
             await app.state.idempotency.finish(principal, idem, 200, response_body)
         return json_response(200, response_body, rid)
@@ -452,9 +529,71 @@ def create_app(
         ).model_dump(exclude={"debug"})
         if debug_payload is not None:
             response_body["debug"] = debug_payload.model_dump()
+        log_conversation_pair_safe(
+            app.state.user_data,
+            payload.user_id,
+            user_text=payload.message,
+            reply=response_body["reply"],
+            intent=response_body["intent"],
+            request_id=rid,
+        )
         if executing:
             await app.state.idempotency.finish(principal, idem, 200, response_body)
         return _stream_response(response_body, rid)
+
+    @app.post("/v1/users/consent", responses=error_responses)
+    async def set_user_consent(
+        payload: ConsentRequest,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        authorize(request)
+        rid = request_id(request)
+        app.state.user_data.get_or_create_user(payload.user_id)
+        app.state.user_data.set_consent(
+            payload.user_id,
+            personalization=payload.personalization,
+            sensitive=payload.sensitive,
+        )
+        app.state.user_data.log_audit(
+            payload.user_id,
+            action="consent.update",
+            resource="consent",
+            request_id=rid,
+        )
+        return json_response(200, {
+            "user_id": payload.user_id,
+            "personalization": payload.personalization,
+            "sensitive": payload.sensitive if payload.personalization else False,
+        }, rid)
+
+    @app.get("/v1/me/summary", responses=error_responses)
+    async def me_summary(
+        request: Request,
+        user_id: str = Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_:@.-]+$"),
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        authorize(request)
+        rid = request_id(request)
+        summary = app.state.user_data.summary(user_id)
+        return json_response(200, summary, rid)
+
+    @app.post("/v1/privacy/delete-request", responses=error_responses)
+    async def privacy_delete_request(
+        payload: DeleteUserRequest,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        authorize(request)
+        rid = request_id(request)
+        app.state.user_data.log_audit(
+            payload.user_id,
+            action="privacy.delete",
+            resource="user_data",
+            request_id=rid,
+        )
+        app.state.user_data.delete_user(payload.user_id)
+        return json_response(200, {"status": "deleted", "user_id": payload.user_id}, rid)
 
     @app.get("/v1/knowledge/search", responses=error_responses)
     async def v1_knowledge_search(

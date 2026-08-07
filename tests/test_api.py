@@ -147,3 +147,15 @@ def test_java_chat_returns_checkin_intent_when_model_only_returns_chat():
         }, headers=headers())
         assert response.status_code == 200
         assert response.json()["intent"] == "checkin"
+
+
+def test_java_chat_logs_conversation_events():
+    with TestClient(app()) as client:
+        response = client.post("/chat", json={
+            "userId": "user_events",
+            "message": "你好",
+            "conversationHistory": [],
+        }, headers=headers())
+        assert response.status_code == 200
+        events = client.app.state.user_data.repository.list_conversation_events("user_events")
+        assert len(events) == 2
