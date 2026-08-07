@@ -88,6 +88,17 @@ def test_action_module_can_be_recommended_once_per_session():
     assert other_session.session_id == "s2"
 
 
+def test_explicit_recommendation_can_repeat_in_same_session():
+    service = ActionService(MemoryActionRepository())
+    first = service.recommend("u1", "s1", valid_action("M1"), source_message_id="msg-1")
+    second = service.recommend(
+        "u1", "s1", valid_action("M1"),
+        source_message_id="msg-2", deduplicate=False,
+    )
+    assert first.module == second.module == "M1"
+    assert first.recommendation_id != second.recommendation_id
+
+
 def test_completed_action_summary_requires_authorized_memory():
     memory = MemoryService(MemoryMemoryRepository())
     repository = MemoryActionRepository()

@@ -74,6 +74,18 @@ def test_v1_chat_does_not_repeat_module_in_same_session():
         assert second.json()["action"] is None
 
 
+def test_v1_explicit_request_repops_module_after_implicit_in_same_session():
+    with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
+        implicit = client.post("/v1/chat", json=payload(session_id="session-repop"), headers=headers())
+        explicit = client.post(
+            "/v1/chat",
+            json=payload(session_id="session-repop", message="我想签到打卡"),
+            headers=headers(),
+        )
+        assert implicit.json()["action"]["module"] == "M1"
+        assert explicit.json()["action"]["module"] == "M1"
+
+
 def test_v1_chat_stream_returns_sse_after_safety_pipeline():
     with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
         response = client.post(

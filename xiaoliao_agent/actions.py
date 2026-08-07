@@ -227,16 +227,25 @@ class ActionService:
         self.memory_service = memory_service
         self.decline_cooldown = decline_cooldown
 
-    def recommend(self, user_id: str, session_id: str, action: dict[str, Any], *, source_message_id: str) -> ActionRecommendation:
+    def recommend(
+        self,
+        user_id: str,
+        session_id: str,
+        action: dict[str, Any],
+        *,
+        source_message_id: str,
+        deduplicate: bool = True,
+    ) -> ActionRecommendation:
         try:
             payload = ActionPayload.model_validate(action)
         except Exception as exc:
             raise ActionContractError("action_policy_violation") from exc
         now = datetime.now(timezone.utc)
-        if self.repository.has_recommended(user_id, session_id, payload.module):
-            raise ActionAlreadyRecommended("action already recommended in this session")
-        if self.repository.find_declined(user_id, payload.module, now, self.decline_cooldown):
-            raise ActionContractError("action recommendation cooldown")
+        if deduplicate:
+            if self.repository.has_recommended(user_id, session_id, payload.module):
+                raise ActionAlreadyRecommended("action already recommended in this session")
+            if self.repository.find_declined(user_id, payload.module, now, self.decline_cooldown):
+                raise ActionContractError("action recommendation cooldown")
         expires_at = None
         if payload.expires_at:
             expires_at = datetime.fromisoformat(payload.expires_at.replace("Z", "+00:00"))

@@ -1003,9 +1003,11 @@ class XiaoliaoAgent:
         recommendation_id = None
         if final_action is not None:
             try:
+                explicit_request = resolve_explicit_intent(user_text) is not None
                 recommendation = self.action_service.recommend(
                     user_id, session_id, final_action,
                     source_message_id=getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
+                    deduplicate=not explicit_request,
                 )
                 recommendation_id = recommendation.recommendation_id
             except ActionAlreadyRecommended:
@@ -1210,11 +1212,13 @@ class XiaoliaoAgent:
         if final_action is not None:
             start = time.perf_counter()
             try:
+                explicit_request = resolve_explicit_intent(user_text) is not None
                 recommendation = self.action_service.recommend(
                     user_id,
                     session_id,
                     final_action,
                     source_message_id=getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
+                    deduplicate=not explicit_request,
                 )
                 recommendation_id = recommendation.recommendation_id
             except ActionAlreadyRecommended:

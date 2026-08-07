@@ -150,6 +150,14 @@ def test_same_session_does_not_recommend_same_module_twice():
     assert other_session.action["module"] == "M1"
 
 
+def test_explicit_request_repops_same_module_in_same_session():
+    agent = make_agent()
+    first = agent.chat("我最近有点累", user_id="u1", session_id="s1")
+    explicit = agent.chat("我想签到打卡", user_id="u1", session_id="s1")
+    assert first.action["module"] == "M1"
+    assert explicit.action["module"] == "M1"
+
+
 def test_inspector_client_uses_thinking_off_by_default():
     settings = Settings(
         deepseek_api_key="main-key",
