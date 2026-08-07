@@ -5,6 +5,7 @@ from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.guardrails import CRISIS_FALLBACK
 from tests.test_agent_pipeline import FakeInspectorClient, FakeMainClient
+from tests.test_main_agent import ChatOnlyMainClient
 
 
 JAVA_INTENTS = {"chat", "checkin", "game", "exercise", "assessment", "community"}
@@ -128,3 +129,21 @@ def test_all_internal_intents_map_to_java_intents():
     assert normalize_intent("emotion_checkin", None) == "checkin"
     assert normalize_intent("positive_practice", None) == "exercise"
     assert normalize_intent("psychological_assessment", None) == "assessment"
+
+
+def test_java_chat_returns_checkin_intent_when_model_only_returns_chat():
+    def agent_factory():
+        return XiaoliaoAgent(
+            Settings(),
+            main_client=ChatOnlyMainClient(),
+            inspector_client=FakeInspectorClient(),
+        )
+
+    with TestClient(create_app(agent_factory, api_token="test-token", test_mode=True)) as client:
+        response = client.post("/chat", json={
+            "userId": "user_checkin",
+            "message": "我想签到打卡",
+            "conversationHistory": [],
+        }, headers=headers())
+        assert response.status_code == 200
+        assert response.json()["intent"] == "checkin"

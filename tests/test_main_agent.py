@@ -53,6 +53,16 @@ class ConfigurableMainClient:
         return self.payload if isinstance(self.payload, str) else json.dumps(self.payload, ensure_ascii=False)
 
 
+class ChatOnlyMainClient:
+    def chat(self, messages, *, json_mode=False):
+        return json.dumps({
+            "reply": "好的，慢慢来。",
+            "intent": "chat",
+            "action": None,
+            "risk_hint": "none",
+        }, ensure_ascii=False)
+
+
 def make_agent(main_client):
     PassingInspector.calls = 0
     return XiaoliaoAgent(
@@ -142,5 +152,40 @@ def test_stage_latencies_are_recorded_for_main_pipeline():
         assert stage in result.stage_latencies
         assert result.stage_latencies[stage] >= 0
     assert result.main_model == "deepseek-v4-flash"
-    assert result.prompt_version == "1.3.0"
+    assert result.prompt_version == "1.4.0"
     assert "timeout" not in result.reply.lower()
+
+
+@pytest.mark.parametrize("message,intent,module,page", [
+    ("我想签到打卡", "checkin", "M1", "/pages/checkin/index"),
+    ("我想玩个游戏", "game", "M2", "/pages/games/index"),
+    ("我想做个积极心理练习", "exercise", "M3", "/pages/exercise/index"),
+    ("我想去社区找朋友聊聊天", "community", "M5", "/pages/community/index"),
+    ("我想做个心理测评", "assessment", None, None),
+])
+def test_explicit_module_request_overrides_chat_only_model(message, intent, module, page):
+    result = make_agent(ChatOnlyMainClient()).chat(message)
+    assert result.intent == intent
+    if module:
+        assert result.action["module"] == module
+        assert result.action["page"] == page
+    else:
+        assert result.action is None
+
+
+def test_explicit_module_request_survives_stream_done_event():
+    events = list(make_agent(ChatOnlyMainClient()).chat_stream("我想签到打卡"))
+    done = next(event for event in events if event.get("type") == "done")
+    assert done["intent"] == "checkin"
+    assert done["action"]["module"] == "M1"
+
+
+@pytest.mark.parametrize("message", [
+    "我老伴每天玩游戏，我有点担心他",
+    "我们社区最近在组织活动",
+    "我每天都会做练习，感觉挺好",
+])
+def test_module_keywords_in_plain_chat_do_not_trigger_action(message):
+    result = make_agent(ChatOnlyMainClient()).chat(message)
+    assert result.intent == "chat"
+    assert result.action is None

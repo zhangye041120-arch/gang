@@ -79,12 +79,114 @@ _INTENT_ALIASES = {
     "community": "community",
 }
 
+_EXPLICIT_ACTION_BY_MODULE = {
+    "M1": {
+        "type": "miniprogram",
+        "module": "M1",
+        "page": "/pages/checkin/index",
+        "params": {},
+        "reason": "user_requested_checkin",
+        "expires_at": None,
+    },
+    "M2": {
+        "type": "miniprogram",
+        "module": "M2",
+        "page": "/pages/games/index",
+        "params": {},
+        "reason": "user_requested_game",
+        "expires_at": None,
+    },
+    "M3": {
+        "type": "miniprogram",
+        "module": "M3",
+        "page": "/pages/exercise/index",
+        "params": {},
+        "reason": "user_requested_exercise",
+        "expires_at": None,
+    },
+    "M5": {
+        "type": "miniprogram",
+        "module": "M5",
+        "page": "/pages/community/index",
+        "params": {},
+        "reason": "user_requested_community",
+        "expires_at": None,
+    },
+}
+
+_EXPLICIT_INTENT_RULES: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
+    (
+        re.compile(r"签到|打卡|记(?:一下|一记|个)?(?:今天)?心情|心情打卡"),
+        "checkin",
+        "M1",
+    ),
+    (
+        re.compile(
+            r"脑力游戏|"
+            r"(?:我|咱|咱们|我们)?(?:想|要|去|来|能|可以).{0,8}(?:小)?游戏|"
+            r"(?:玩|来|去)(?:个|一|一次|一会儿|一下)(?:小)?游戏|"
+            r"(?:有什么|有哪些).{0,4}(?:小)?游戏"
+        ),
+        "game",
+        "M2",
+    ),
+    (
+        re.compile(
+            r"积极心理练习|心理练习|"
+            r"(?:我|咱|咱们|我们)?(?:想|要|去|来|能|可以).{0,8}(?:做|练).{0,2}练习|"
+            r"(?:做|来)(?:个|一|一次|一下)(?:心理|积极)?练习|"
+            r"练习一下|三件好事|感恩留言"
+        ),
+        "exercise",
+        "M3",
+    ),
+    (
+        re.compile(
+            r"心理测评|"
+            r"(?:我|咱|咱们|我们)?(?:想|要|去|来|能|可以).{0,6}测评|"
+            r"(?:做个|做一下)测评|测一测(?:心理)?"
+        ),
+        "assessment",
+        None,
+    ),
+    (
+        re.compile(
+            r"兴趣圈|找朋友(?:聊聊天|聊天)|发(?:个)?帖子|发帖|"
+            r"(?:我|咱|咱们|我们)?(?:想|要|去|来|能|可以).{0,6}(?:社区|圈子)|"
+            r"(?:去|逛)社区"
+        ),
+        "community",
+        "M5",
+    ),
+)
+
 
 def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str:
     module = str((action or {}).get("module", "")).upper()
     if module in _ACTION_MODULE_INTENTS:
         return _ACTION_MODULE_INTENTS[module]
     return _INTENT_ALIASES.get((raw_intent or "").strip().lower(), "chat")
+
+
+def resolve_explicit_intent(user_text: str) -> tuple[str, dict[str, Any] | None] | None:
+    """Deterministically recognize explicit module requests from the user message."""
+    text = (user_text or "").strip()
+    if not text:
+        return None
+    for pattern, intent, module in _EXPLICIT_INTENT_RULES:
+        if pattern.search(text):
+            action = _EXPLICIT_ACTION_BY_MODULE.get(module)
+            return intent, dict(action) if action else None
+    return None
+
+
+def apply_explicit_intent(user_text: str, candidate: MainResponse) -> MainResponse:
+    """Overwrite chat-only model output when the user explicitly requests a module."""
+    resolved = resolve_explicit_intent(user_text)
+    if resolved is None:
+        return candidate
+    intent, action = resolved
+    return replace(candidate, intent=intent, action=action, errors=[])
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
@@ -739,6 +841,7 @@ class XiaoliaoAgent:
         # ── deterministic postcheck ──────────────────────────────
         if 'candidate' not in dir():
             candidate = parse_main(accumulated)
+        candidate = apply_explicit_intent(user_text, candidate)
         quick = precheck(user_text, candidate.reply)
         if quick.risk_category != "normal":
             result = self._guardrail_result(
@@ -787,6 +890,7 @@ class XiaoliaoAgent:
                     ),
                     json_mode=True,
                 ))
+                candidate = apply_explicit_intent(user_text, candidate)
             except (AgentInvalidResponseError, ModelClientError):
                 fallback = self._fallback_result(
                     "AGENT_INSPECTION_FAILED", sources=sources, rewritten=True, inspection=inspection,
@@ -924,6 +1028,7 @@ class XiaoliaoAgent:
                 stages,
             )
         stages["main_ms"] = max(0, int((time.perf_counter() - start) * 1000))
+        candidate = apply_explicit_intent(user_text, candidate)
 
         start = time.perf_counter()
         quick = precheck(user_text, candidate.reply)
@@ -971,6 +1076,7 @@ class XiaoliaoAgent:
                     ),
                     json_mode=True,
                 ))
+                candidate = apply_explicit_intent(user_text, candidate)
             except AgentInvalidResponseError:
                 stages["rewrite_ms"] = max(0, int((time.perf_counter() - start) * 1000))
                 return self._with_stages(
