@@ -40,7 +40,7 @@ from .knowledge import KnowledgeBase
 from .knowledge_repository import PostgresKnowledgeRepository
 from .embeddings import OpenAICompatibleEmbeddingClient
 from .lesson_bridge import LessonBridge
-from .memory import MemoryService
+from .memory import MemoryCandidate, MemoryService
 from .memory_repository import MemoryMemoryRepository, PostgresMemoryRepository
 from .notifications import CrisisNotifier
 from .quality import InspectionLog, MemoryQualityRepository, PostgresQualityRepository, QualityService
@@ -202,6 +202,12 @@ _MODEL_INTENT_MODULES = {
     "exercise": "M3",
     "community": "M5",
 }
+
+_AGE_PATTERNS = (
+    re.compile(r"我(?:今年|现在|已经)?\s*(\d{1,3})\s*岁(?![的岁])"),
+    re.compile(r"我今年\s*(\d{1,3})(?=[，。！？\s]|$)"),
+    re.compile(r"我已经\s*(\d{1,3})\s*岁了?"),
+)
 
 
 def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str:
@@ -599,6 +605,51 @@ class XiaoliaoAgent:
         )
         return content, {"source": "reminder:created", "title": "提醒设置", "content": content}
 
+    def _persist_profile_memory(
+        self,
+        user_text: str,
+        user_id: str,
+        request_id: str,
+    ) -> None:
+        """Save explicitly stated age facts into authorized long-term memory."""
+        if not user_id.strip():
+            return
+        age_match = None
+        for pattern in _AGE_PATTERNS:
+            age_match = pattern.search(user_text)
+            if age_match:
+                break
+        if age_match is None:
+            return
+        age = int(age_match.group(1))
+        if not 0 < age < 130:
+            return
+        key = "用户年龄："
+        content = f"{key}{age}岁"
+        try:
+            existing = [
+                record
+                for record in self.memory_service.view(user_id)
+                if record.memory_type == "profile" and record.content.startswith(key)
+            ]
+            if existing:
+                self.memory_service.correct(user_id, existing[0].memory_id, content)
+            else:
+                self.memory_service.save_candidate(
+                    user_id,
+                    MemoryCandidate(
+                        memory_type="profile",
+                        content=content,
+                        confidence=1.0,
+                        source_message_id=request_id or uuid.uuid4().hex,
+                        consent_scope="personalization",
+                        explicitly_stated=True,
+                    ),
+                )
+        except Exception:
+            # Memory extraction must never break the conversation.
+            pass
+
     def _fallback_result(
         self,
         error_code: str,
@@ -770,6 +821,8 @@ class XiaoliaoAgent:
         )
         result.stage_latencies["total_ms"] = max(0, int((time.perf_counter() - started) * 1000))
         result.request_id = request_id or result.request_id or uuid.uuid4().hex
+        if personalization and not result.blocked and not result.error_code:
+            self._persist_profile_memory(user_text, user_id, result.request_id)
         usage_items = [
             getattr(self.main_client, "last_usage", None),
             getattr(self.inspector_client, "last_usage", None),
@@ -1015,6 +1068,12 @@ class XiaoliaoAgent:
             except ActionContractError:
                 final_action = None
 
+        if personalization:
+            self._persist_profile_memory(
+                user_text,
+                user_id,
+                getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
+            )
         latency = int((time.perf_counter() - started) * 1000)
         yield {
             "type": "done",

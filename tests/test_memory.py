@@ -35,6 +35,35 @@ def make_service():
     return MemoryService(repository, vector_index=vectors), repository, vectors
 
 
+class PassingInspector:
+    def chat(self, messages, *, json_mode=False):
+        return json.dumps({
+            "crisis_detected": False,
+            "safety_violation": False,
+            "intent_accurate": True,
+            "age_appropriate": True,
+            "cbt_appropriate": True,
+            "issues": [],
+            "suggestion": "",
+            "error_pattern": "none",
+            "lesson": "",
+        }, ensure_ascii=False)
+
+
+class EchoMainClient:
+    def __init__(self):
+        self.messages = None
+
+    def chat(self, messages, *, json_mode=False):
+        self.messages = messages
+        return json.dumps({
+            "reply": "好，我记住了。",
+            "intent": "chat",
+            "action": None,
+            "risk_hint": "none",
+        }, ensure_ascii=False)
+
+
 def test_default_without_consent_neither_writes_nor_reads():
     service, repository, _ = make_service()
     with pytest.raises(ConsentRequiredError):
@@ -171,6 +200,44 @@ def test_authorized_memory_context_is_connected_as_untrusted_agent_data():
     agent.chat("我们聊点什么", user_id="user-1", personalization=True)
     assert "用户喜欢听戏曲" in main.messages[-1]["content"]
     assert "untrusted_memory" in main.messages[-1]["content"]
+
+
+def test_explicit_age_survives_new_conversation_with_same_user():
+    service, repository, _ = make_service()
+    service.set_consent("user-age", personalization=True)
+    first_main = EchoMainClient()
+    first_agent = XiaoliaoAgent(
+        Settings(),
+        main_client=first_main,
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+    first_agent.chat("我今年60岁", user_id="user-age", personalization=True)
+    assert "用户年龄：60岁" in service.get_context("user-age")
+
+    second_main = EchoMainClient()
+    second_agent = XiaoliaoAgent(
+        Settings(),
+        main_client=second_main,
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+    second_agent.chat("我今年多少岁", user_id="user-age", session_id="new-session", personalization=True)
+    assert "用户年龄：60岁" in second_main.messages[-1]["content"]
+
+
+def test_explicit_age_is_not_saved_without_consent():
+    service, repository, _ = make_service()
+    main = EchoMainClient()
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+    agent.chat("我今年60岁", user_id="user-no-consent", personalization=False)
+    assert service.get_context("user-no-consent") == ""
+    assert repository.list_for_user("user-no-consent") == []
 
 
 class SemanticRepository(MemoryMemoryRepository):
