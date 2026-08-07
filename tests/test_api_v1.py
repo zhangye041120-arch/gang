@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from api_server import create_app
 from tests.test_agent_pipeline import FakeInspectorClient, FakeMainClient
+from tests.test_main_agent import ChatOnlyMainClient
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.schemas import AgentResult, InspectionResult
@@ -46,6 +47,23 @@ def test_v1_chat_has_frozen_response_fields_and_request_id():
         }
         assert response.json()["session_id"] == "session_001"
         assert response.headers["x-request-id"] == "gateway-req-1"
+
+
+def test_v1_chat_returns_structured_action_for_explicit_request():
+    def agent_factory():
+        return XiaoliaoAgent(
+            Settings(),
+            main_client=ChatOnlyMainClient(),
+            inspector_client=FakeInspectorClient(),
+        )
+
+    with TestClient(create_app(agent_factory, api_token="test-token", test_mode=True)) as client:
+        response = client.post("/v1/chat", json=payload(message="我想签到打卡"), headers=headers())
+        assert response.status_code == 200
+        body = response.json()
+        assert body["intent"] == "checkin"
+        assert body["action"]["module"] == "M1"
+        assert body["action"]["page"] == "/pages/checkin/index"
 
 
 def test_v1_chat_stream_returns_sse_after_safety_pipeline():
