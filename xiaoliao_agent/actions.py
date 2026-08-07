@@ -12,6 +12,10 @@ class ActionContractError(ValueError):
     pass
 
 
+class ActionAlreadyRecommended(ActionContractError):
+    pass
+
+
 @dataclass
 class ActionRecommendation:
     recommendation_id: str
@@ -62,6 +66,15 @@ class MemoryActionRepository:
             return any(
                 item.user_id == user_id and item.module == module and item.status == "declined"
                 and item.created_at + cooldown > now
+                for item in self._recommendations.values()
+            )
+
+    def has_recommended(self, user_id: str, session_id: str, module: str) -> bool:
+        with self._lock:
+            return any(
+                item.user_id == user_id
+                and item.session_id == session_id
+                and item.module == module
                 for item in self._recommendations.values()
             )
 
@@ -156,6 +169,13 @@ class PostgresActionRepository:
                 (user_id, module, now - cooldown),
             ).fetchone())
 
+    def has_recommended(self, user_id: str, session_id: str, module: str) -> bool:
+        with self._connect() as connection:
+            return bool(connection.execute(
+                "SELECT 1 FROM ai_action_recommendations WHERE user_id=%s AND session_id=%s AND module=%s LIMIT 1",
+                (user_id, session_id, module),
+            ).fetchone())
+
     def has_event(self, event_id: str) -> bool:
         with self._connect() as connection:
             return bool(connection.execute("SELECT 1 FROM ai_action_events WHERE event_id=%s", (event_id,)).fetchone())
@@ -213,6 +233,8 @@ class ActionService:
         except Exception as exc:
             raise ActionContractError("action_policy_violation") from exc
         now = datetime.now(timezone.utc)
+        if self.repository.has_recommended(user_id, session_id, payload.module):
+            raise ActionAlreadyRecommended("action already recommended in this session")
         if self.repository.find_declined(user_id, payload.module, now, self.decline_cooldown):
             raise ActionContractError("action recommendation cooldown")
         expires_at = None

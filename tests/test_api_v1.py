@@ -66,6 +66,14 @@ def test_v1_chat_returns_structured_action_for_explicit_request():
         assert body["action"]["page"] == "/pages/checkin/index"
 
 
+def test_v1_chat_does_not_repeat_module_in_same_session():
+    with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
+        first = client.post("/v1/chat", json=payload(session_id="session-dup"), headers=headers())
+        second = client.post("/v1/chat", json=payload(session_id="session-dup"), headers=headers())
+        assert first.json()["action"]["module"] == "M1"
+        assert second.json()["action"] is None
+
+
 def test_v1_chat_stream_returns_sse_after_safety_pipeline():
     with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
         response = client.post(

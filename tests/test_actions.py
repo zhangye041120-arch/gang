@@ -4,6 +4,7 @@ import json
 import pytest
 
 from xiaoliao_agent.actions import (
+    ActionAlreadyRecommended,
     ActionContractError,
     ActionEvent,
     ActionService,
@@ -73,6 +74,18 @@ def test_invalid_transition_expiry_and_decline_cooldown():
         service.recommend("u1", "s2", valid_action(), source_message_id="msg-2")
     with pytest.raises(ActionContractError, match="expired"):
         service.recommend("u2", "s1", valid_action("M2", expires_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()), source_message_id="msg-3")
+
+
+def test_action_module_can_be_recommended_once_per_session():
+    service = ActionService(MemoryActionRepository())
+    first = service.recommend("u1", "s1", valid_action("M1"), source_message_id="msg-1")
+    assert first.module == "M1"
+    with pytest.raises(ActionAlreadyRecommended):
+        service.recommend("u1", "s1", valid_action("M1"), source_message_id="msg-2")
+    other_module = service.recommend("u1", "s1", valid_action("M2"), source_message_id="msg-3")
+    assert other_module.module == "M2"
+    other_session = service.recommend("u1", "s2", valid_action("M1"), source_message_id="msg-4")
+    assert other_session.session_id == "s2"
 
 
 def test_completed_action_summary_requires_authorized_memory():

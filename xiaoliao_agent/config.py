@@ -67,7 +67,7 @@ class Settings:
     embedding_model: str = ""
     embedding_dimension: int = 1536
     knowledge_database_url: str = ""
-    prompt_version: str = "1.4.0"
+    prompt_version: str = "1.5.0"
     action_decline_cooldown_hours: int = 2
     quality_hash_salt: str = "xiaoliao-local-quality"
     api_token: str = ""
@@ -135,7 +135,7 @@ class Settings:
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1536")),
             knowledge_database_url=os.getenv("KNOWLEDGE_DATABASE_URL", ""),
-            prompt_version=os.getenv("PROMPT_VERSION", "1.4.0"),
+            prompt_version=os.getenv("PROMPT_VERSION", "1.5.0"),
             action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "2")),
             quality_hash_salt=os.getenv("QUALITY_HASH_SALT", "xiaoliao-local-quality"),
             api_token=os.getenv("API_TOKEN", ""),

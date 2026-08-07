@@ -139,6 +139,17 @@ def test_agent_pipeline_contract():
     assert not result.blocked
 
 
+def test_same_session_does_not_recommend_same_module_twice():
+    agent = make_agent()
+    first = agent.chat("我最近有点累", user_id="u1", session_id="s1")
+    second = agent.chat("我最近有点累", user_id="u1", session_id="s1")
+    assert first.action["module"] == "M1"
+    assert second.action is None
+    assert second.error_code is None
+    other_session = agent.chat("我最近有点累", user_id="u1", session_id="s2")
+    assert other_session.action["module"] == "M1"
+
+
 def test_inspector_client_uses_thinking_off_by_default():
     settings = Settings(
         deepseek_api_key="main-key",

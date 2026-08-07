@@ -18,7 +18,13 @@ from .crisis_repository import (
     PostgresCrisisEventRepository,
     new_crisis_event,
 )
-from .actions import ActionContractError, ActionService, MemoryActionRepository, PostgresActionRepository
+from .actions import (
+    ActionAlreadyRecommended,
+    ActionContractError,
+    ActionService,
+    MemoryActionRepository,
+    PostgresActionRepository,
+)
 from .guardrails import (
     CRISIS_FALLBACK,
     FRAUD_FALLBACK,
@@ -160,6 +166,43 @@ _EXPLICIT_INTENT_RULES: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
     ),
 )
 
+_IMPLICIT_INTENT_RULES: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
+    (
+        re.compile(
+            r"心情不太好.{0,12}记|"
+            r"把(?:今天)?(?:心情|感觉).{0,6}(?:记|写)(?:一下|下来)|"
+            r"(?:想|要).{0,6}(?:记|写)(?:一下|下来).{0,6}(?:心情|感觉)"
+        ),
+        "checkin",
+        "M1",
+    ),
+    (
+        re.compile(r"练练脑子|练练脑|动动脑|健脑|出去走一走|出去走走|散步|想练一练|练一练"),
+        "exercise",
+        "M3",
+    ),
+    (
+        re.compile(
+            r"一个人在家有点闷|闷得慌|心里闷|"
+            r"想找人(?:说话|聊聊天|聊聊|说说话)|想聊聊天|想找人陪我"
+        ),
+        "community",
+        "M5",
+    ),
+    (
+        re.compile(r"想测测自己|测测(?:我的)?(?:心情|状态|心理)|心理状态怎么样"),
+        "assessment",
+        None,
+    ),
+)
+
+_MODEL_INTENT_MODULES = {
+    "checkin": "M1",
+    "game": "M2",
+    "exercise": "M3",
+    "community": "M5",
+}
+
 
 def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str:
     module = str((action or {}).get("module", "")).upper()
@@ -169,24 +212,29 @@ def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str
 
 
 def resolve_explicit_intent(user_text: str) -> tuple[str, dict[str, Any] | None] | None:
-    """Deterministically recognize explicit module requests from the user message."""
+    """Deterministically recognize module requests from the user message."""
     text = (user_text or "").strip()
     if not text:
         return None
-    for pattern, intent, module in _EXPLICIT_INTENT_RULES:
-        if pattern.search(text):
-            action = _EXPLICIT_ACTION_BY_MODULE.get(module)
-            return intent, dict(action) if action else None
+    for rules in (_EXPLICIT_INTENT_RULES, _IMPLICIT_INTENT_RULES):
+        for pattern, intent, module in rules:
+            if pattern.search(text):
+                action = _EXPLICIT_ACTION_BY_MODULE.get(module)
+                return intent, dict(action) if action else None
     return None
 
 
 def apply_explicit_intent(user_text: str, candidate: MainResponse) -> MainResponse:
-    """Overwrite chat-only model output when the user explicitly requests a module."""
+    """Overwrite chat-only model output when the user requests a module."""
     resolved = resolve_explicit_intent(user_text)
-    if resolved is None:
-        return candidate
-    intent, action = resolved
-    return replace(candidate, intent=intent, action=action, errors=[])
+    if resolved is not None:
+        intent, action = resolved
+        return replace(candidate, intent=intent, action=action, errors=[])
+    java_intent = to_java_intent(candidate.intent, None)
+    module = _MODEL_INTENT_MODULES.get(java_intent)
+    if module and candidate.action is None:
+        return replace(candidate, action=dict(_EXPLICIT_ACTION_BY_MODULE[module]), errors=[])
+    return candidate
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
@@ -960,6 +1008,8 @@ class XiaoliaoAgent:
                     source_message_id=getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
                 )
                 recommendation_id = recommendation.recommendation_id
+            except ActionAlreadyRecommended:
+                final_action = None
             except ActionContractError:
                 final_action = None
 
@@ -1167,6 +1217,8 @@ class XiaoliaoAgent:
                     source_message_id=getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
                 )
                 recommendation_id = recommendation.recommendation_id
+            except ActionAlreadyRecommended:
+                final_action = None
             except ActionContractError:
                 final_action = None
                 final_error_code = "action_policy_violation"

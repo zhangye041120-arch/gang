@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from xiaoliao_agent.agent import AgentInvalidResponseError, XiaoliaoAgent, parse_main
+from xiaoliao_agent.agent import AgentInvalidResponseError, XiaoliaoAgent, parse_main, to_java_intent
 from xiaoliao_agent.client import ModelTimeoutError
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.guardrails import GENERIC_FALLBACK
@@ -152,7 +152,7 @@ def test_stage_latencies_are_recorded_for_main_pipeline():
         assert stage in result.stage_latencies
         assert result.stage_latencies[stage] >= 0
     assert result.main_model == "deepseek-v4-flash"
-    assert result.prompt_version == "1.4.0"
+    assert result.prompt_version == "1.5.0"
     assert "timeout" not in result.reply.lower()
 
 
@@ -180,10 +180,35 @@ def test_explicit_module_request_survives_stream_done_event():
     assert done["action"]["module"] == "M1"
 
 
+@pytest.mark.parametrize("message,intent,module,page", [
+    ("今天心情不太好，想记一下", "checkin", "M1", "/pages/checkin/index"),
+    ("最近脑子有点慢，想练练脑子", "exercise", "M3", "/pages/exercise/index"),
+    ("一个人在家有点闷，想找人聊聊天", "community", "M5", "/pages/community/index"),
+    ("想测测自己的心理状态", "assessment", None, None),
+])
+def test_implicit_module_request_overrides_chat_only_model(message, intent, module, page):
+    result = make_agent(ChatOnlyMainClient()).chat(message)
+    assert result.intent == intent
+    if module:
+        assert result.action["module"] == module
+        assert result.action["page"] == page
+    else:
+        assert result.action is None
+
+
+def test_model_inferred_intent_gets_action_contract():
+    payload = {**VALID_MAIN, "intent": "emotion_checkin", "action": None}
+    result = make_agent(ConfigurableMainClient(payload)).chat("我最近有点累")
+    assert to_java_intent(result.intent, result.action) == "checkin"
+    assert result.action["module"] == "M1"
+
+
 @pytest.mark.parametrize("message", [
     "我老伴每天玩游戏，我有点担心他",
     "我们社区最近在组织活动",
     "我每天都会做练习，感觉挺好",
+    "今天天气有点闷",
+    "我想找人修水管",
 ])
 def test_module_keywords_in_plain_chat_do_not_trigger_action(message):
     result = make_agent(ChatOnlyMainClient()).chat(message)
