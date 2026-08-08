@@ -18,7 +18,13 @@ from .crisis_repository import (
     PostgresCrisisEventRepository,
     new_crisis_event,
 )
-from .actions import ActionContractError, ActionService, MemoryActionRepository, PostgresActionRepository
+from .actions import (
+    ActionAlreadyRecommended,
+    ActionContractError,
+    ActionService,
+    MemoryActionRepository,
+    PostgresActionRepository,
+)
 from .guardrails import (
     CRISIS_FALLBACK,
     FRAUD_FALLBACK,
@@ -34,7 +40,7 @@ from .knowledge import KnowledgeBase
 from .knowledge_repository import PostgresKnowledgeRepository
 from .embeddings import OpenAICompatibleEmbeddingClient
 from .lesson_bridge import LessonBridge
-from .memory import MemoryService
+from .memory import MemoryCandidate, MemoryService
 from .memory_repository import MemoryMemoryRepository, PostgresMemoryRepository
 from .notifications import CrisisNotifier
 from .quality import InspectionLog, MemoryQualityRepository, PostgresQualityRepository, QualityService
@@ -160,6 +166,126 @@ _EXPLICIT_INTENT_RULES: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
     ),
 )
 
+_IMPLICIT_INTENT_RULES: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
+    (
+        re.compile(
+            r"心情不太好.{0,12}记|"
+            r"把(?:今天)?(?:心情|感觉).{0,6}(?:记|写)(?:一下|下来)|"
+            r"(?:想|要).{0,6}(?:记|写)(?:一下|下来).{0,6}(?:心情|感觉)"
+        ),
+        "checkin",
+        "M1",
+    ),
+    (
+        re.compile(r"练练脑子|练练脑|动动脑|健脑|出去走一走|出去走走|散步|想练一练|练一练"),
+        "exercise",
+        "M3",
+    ),
+    (
+        re.compile(
+            r"一个人在家有点闷|闷得慌|心里闷|"
+            r"想找人(?:说话|聊聊天|聊聊|说说话)|想聊聊天|想找人陪我"
+        ),
+        "community",
+        "M5",
+    ),
+    (
+        re.compile(r"想测测自己|测测(?:我的)?(?:心情|状态|心理)|心理状态怎么样"),
+        "assessment",
+        None,
+    ),
+)
+
+_MODEL_INTENT_MODULES = {
+    "checkin": "M1",
+    "game": "M2",
+    "exercise": "M3",
+    "community": "M5",
+}
+
+_PERSONAL_FACT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"我(?:叫[^，。]{1,8})?[，,]?(?:今年|现在|已经)?\s*(\d{1,3})\s*岁(?![的岁])"
+        ),
+        "profile",
+        "用户年龄：",
+    ),
+    (
+        re.compile(
+            r"我(?:叫[^，。]{1,8})?[，,]?今年\s*(\d{1,3})(?=[，。！？\s]|$)"
+        ),
+        "profile",
+        "用户年龄：",
+    ),
+    (
+        re.compile(r"我(?:叫[^，。]{1,8})?[，,]?已经\s*(\d{1,3})\s*岁了?"),
+        "profile",
+        "用户年龄：",
+    ),
+    (re.compile(r"我(?:的名字|名字)(?:叫|是)\s*([\u4e00-\u9fa5]{2,4})"), "profile", "用户姓名："),
+    (re.compile(r"我叫\s*([\u4e00-\u9fa5]{2,4})(?![的岁])"), "profile", "用户姓名："),
+    (re.compile(r"(?:大家可以|可以)叫我\s*([\u4e00-\u9fa5]{2,4})"), "profile", "用户姓名："),
+    (re.compile(r"我是(男|女)(?:的|生)?"), "profile", "用户性别："),
+    (re.compile(r"我(?:是|来自)([\u4e00-\u9fa5]{2,8})人"), "profile", "用户籍贯："),
+    (re.compile(r"我来自([\u4e00-\u9fa5]{2,8})(?=$|[，。！？\s])"), "profile", "用户籍贯："),
+    (re.compile(r"我老家(?:在|是)([\u4e00-\u9fa5]{2,8})"), "profile", "用户籍贯："),
+    (
+        re.compile(
+            r"我(?:叫[^，。]{1,8})?[，,]?(?:退休前|以前|之前)"
+            r"(?:是|做|当过)\s*([\u4e00-\u9fa5]{2,10})"
+        ),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(r"我(?:叫[^，。]{1,8})?[，,]?退休前(?:是|做)([\u4e00-\u9fa5]{2,10})"),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(
+            r"(?:^|[，。])(?:退休前|以前|之前)(?:是|做|当过)\s*([\u4e00-\u9fa5]{2,10})"
+        ),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(r"(?:^|[，。])退休前(?:是|做)([\u4e00-\u9fa5]{2,10})"),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(
+            r"我(老伴|爱人|儿子|女儿|孙子|孙女|外孙|外孙女|哥哥|弟弟|姐姐|妹妹|"
+            r"父亲|母亲|爸爸|妈妈|老爷子|老太太)(?:叫|是|姓)\s*([\u4e00-\u9fa5]{1,4})"
+        ),
+        "family_relationship",
+        "用户家庭：",
+    ),
+    (
+        re.compile(
+            r"我(老伴|爱人|儿子|女儿|孙子|孙女|外孙|外孙女|哥哥|弟弟|姐姐|妹妹|"
+            r"父亲|母亲|爸爸|妈妈|老爷子|老太太)(?=[，。！？\s]|$)"
+        ),
+        "family_relationship",
+        "用户家庭：",
+    ),
+    (
+        re.compile(r"我(?:最喜欢|平时喜欢|喜欢|最爱|爱|闲着没事喜欢)([\u4e00-\u9fa5]{2,20})"),
+        "interest_preference",
+        "用户兴趣：",
+    ),
+)
+
+_SINGLE_VALUE_MEMORY_KEYS = frozenset({
+    "用户年龄：",
+    "用户姓名：",
+    "用户性别：",
+    "用户籍贯：",
+    "用户职业：",
+})
+
 
 def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str:
     module = str((action or {}).get("module", "")).upper()
@@ -169,24 +295,29 @@ def to_java_intent(raw_intent: str, action: dict[str, Any] | None = None) -> str
 
 
 def resolve_explicit_intent(user_text: str) -> tuple[str, dict[str, Any] | None] | None:
-    """Deterministically recognize explicit module requests from the user message."""
+    """Deterministically recognize module requests from the user message."""
     text = (user_text or "").strip()
     if not text:
         return None
-    for pattern, intent, module in _EXPLICIT_INTENT_RULES:
-        if pattern.search(text):
-            action = _EXPLICIT_ACTION_BY_MODULE.get(module)
-            return intent, dict(action) if action else None
+    for rules in (_EXPLICIT_INTENT_RULES, _IMPLICIT_INTENT_RULES):
+        for pattern, intent, module in rules:
+            if pattern.search(text):
+                action = _EXPLICIT_ACTION_BY_MODULE.get(module)
+                return intent, dict(action) if action else None
     return None
 
 
 def apply_explicit_intent(user_text: str, candidate: MainResponse) -> MainResponse:
-    """Overwrite chat-only model output when the user explicitly requests a module."""
+    """Overwrite chat-only model output when the user requests a module."""
     resolved = resolve_explicit_intent(user_text)
-    if resolved is None:
-        return candidate
-    intent, action = resolved
-    return replace(candidate, intent=intent, action=action, errors=[])
+    if resolved is not None:
+        intent, action = resolved
+        return replace(candidate, intent=intent, action=action, errors=[])
+    java_intent = to_java_intent(candidate.intent, None)
+    module = _MODEL_INTENT_MODULES.get(java_intent)
+    if module and candidate.action is None:
+        return replace(candidate, action=dict(_EXPLICIT_ACTION_BY_MODULE[module]), errors=[])
+    return candidate
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
@@ -551,6 +682,76 @@ class XiaoliaoAgent:
         )
         return content, {"source": "reminder:created", "title": "提醒设置", "content": content}
 
+    def _extract_personal_facts(self, user_text: str) -> list[tuple[str, str, str]]:
+        facts: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for pattern, memory_type, key in _PERSONAL_FACT_RULES:
+            for match in pattern.finditer(user_text):
+                if memory_type == "family_relationship":
+                    relation = match.group(1)
+                    name = match.group(2) if match.lastindex and match.lastindex >= 2 and match.group(2) else ""
+                    content = f"{key}{relation}叫{name}" if name else f"{key}{relation}"
+                else:
+                    value = match.group(1).strip()
+                    if key == "用户年龄：":
+                        value = f"{value}岁"
+                    content = f"{key}{value}"
+                if content in seen:
+                    continue
+                seen.add(content)
+                facts.append((memory_type, key, content))
+        return facts
+
+    def _persist_personal_memory(
+        self,
+        user_text: str,
+        user_id: str,
+        request_id: str,
+    ) -> None:
+        """Save explicitly stated personal facts into authorized long-term memory."""
+        if not user_id.strip():
+            return
+        for index, (memory_type, key, content) in enumerate(self._extract_personal_facts(user_text)):
+            try:
+                source_message_id = f"{request_id or uuid.uuid4().hex}-{index}"
+                existing = [
+                    record
+                    for record in self.memory_service.view(user_id)
+                    if record.memory_type == memory_type and record.content.startswith(key)
+                ]
+                if existing:
+                    if any(record.content == content for record in existing):
+                        continue
+                    if key in _SINGLE_VALUE_MEMORY_KEYS:
+                        self.memory_service.correct(user_id, existing[0].memory_id, content)
+                    else:
+                        self.memory_service.save_candidate(
+                            user_id,
+                            MemoryCandidate(
+                                memory_type=memory_type,
+                                content=content,
+                                confidence=1.0,
+                                source_message_id=source_message_id,
+                                consent_scope="personalization",
+                                explicitly_stated=True,
+                            ),
+                        )
+                else:
+                    self.memory_service.save_candidate(
+                        user_id,
+                        MemoryCandidate(
+                            memory_type=memory_type,
+                            content=content,
+                            confidence=1.0,
+                            source_message_id=source_message_id,
+                            consent_scope="personalization",
+                            explicitly_stated=True,
+                        ),
+                    )
+            except Exception:
+                # Memory extraction must never break the conversation.
+                pass
+
     def _fallback_result(
         self,
         error_code: str,
@@ -592,11 +793,24 @@ class XiaoliaoAgent:
             )
         return self._inspector_escalation_client or self.inspector_client
 
-    def _run_inspector(self, user_text: str, candidate: MainResponse, *, thinking: bool = False) -> InspectionResult:
+    def _run_inspector(
+        self,
+        user_text: str,
+        candidate: MainResponse,
+        *,
+        thinking: bool = False,
+        context: str = "",
+    ) -> InspectionResult:
         client = self._inspector_escalation_client_instance() if thinking else self.inspector_client
         try:
             raw = client.chat(
-                inspector_messages(user_text, candidate.reply, candidate.intent, self.settings.prompt_version),
+                inspector_messages(
+                    user_text,
+                    candidate.reply,
+                    candidate.intent,
+                    self.settings.prompt_version,
+                    context,
+                ),
                 json_mode=True,
             )
             inspection = parse_inspection(raw)
@@ -615,8 +829,14 @@ class XiaoliaoAgent:
             )
         return inspection
 
-    def _inspect(self, user_text: str, candidate: MainResponse) -> InspectionResult:
-        return self._run_inspector(user_text, candidate, thinking=False)
+    def _inspect(
+        self,
+        user_text: str,
+        candidate: MainResponse,
+        *,
+        context: str = "",
+    ) -> InspectionResult:
+        return self._run_inspector(user_text, candidate, thinking=False, context=context)
 
     def _should_escalate(self, candidate: MainResponse, inspection: InspectionResult) -> bool:
         if (
@@ -722,6 +942,8 @@ class XiaoliaoAgent:
         )
         result.stage_latencies["total_ms"] = max(0, int((time.perf_counter() - started) * 1000))
         result.request_id = request_id or result.request_id or uuid.uuid4().hex
+        if personalization and not result.blocked and not result.crisis_detected and not result.safety_violation:
+            self._persist_personal_memory(user_text, user_id, result.request_id)
         usage_items = [
             getattr(self.main_client, "last_usage", None),
             getattr(self.inspector_client, "last_usage", None),
@@ -856,9 +1078,11 @@ class XiaoliaoAgent:
             return
 
         # ── inspector ────────────────────────────────────────────
-        inspection = self._inspect(user_text, candidate)
+        inspection = self._inspect(user_text, candidate, context=combined_context)
         if self._should_escalate(candidate, inspection):
-            inspection = self._run_inspector(user_text, candidate, thinking=True)
+            inspection = self._run_inspector(
+                user_text, candidate, thinking=True, context=combined_context,
+            )
         rewritten = False
         final_reply = candidate.reply
 
@@ -913,9 +1137,11 @@ class XiaoliaoAgent:
                        "safety_violation": result.safety_violation,
                        "rewritten": True, "latency_ms": latency}
                 return
-            inspection = self._inspect(user_text, candidate)
+            inspection = self._inspect(user_text, candidate, context=combined_context)
             if self._should_escalate(candidate, inspection):
-                inspection = self._run_inspector(user_text, candidate, thinking=True)
+                inspection = self._run_inspector(
+                    user_text, candidate, thinking=True, context=combined_context,
+                )
             if inspection.hard_blocked:
                 risk = GuardrailResult(
                     "crisis" if inspection.crisis_detected else "medical_boundary",
@@ -955,14 +1181,24 @@ class XiaoliaoAgent:
         recommendation_id = None
         if final_action is not None:
             try:
+                explicit_request = resolve_explicit_intent(user_text) is not None
                 recommendation = self.action_service.recommend(
                     user_id, session_id, final_action,
                     source_message_id=getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
+                    deduplicate=not explicit_request,
                 )
                 recommendation_id = recommendation.recommendation_id
+            except ActionAlreadyRecommended:
+                final_action = None
             except ActionContractError:
                 final_action = None
 
+        if personalization:
+            self._persist_personal_memory(
+                user_text,
+                user_id,
+                getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
+            )
         latency = int((time.perf_counter() - started) * 1000)
         yield {
             "type": "done",
@@ -1042,11 +1278,13 @@ class XiaoliaoAgent:
             )
 
         start = time.perf_counter()
-        inspection = self._inspect(user_text, candidate)
+        inspection = self._inspect(user_text, candidate, context=combined_context)
         stages["inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if self._should_escalate(candidate, inspection):
             start = time.perf_counter()
-            inspection = self._run_inspector(user_text, candidate, thinking=True)
+            inspection = self._run_inspector(
+                user_text, candidate, thinking=True, context=combined_context,
+            )
             stages["escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if inspection.hard_blocked:
             risk = GuardrailResult(
@@ -1117,11 +1355,13 @@ class XiaoliaoAgent:
                 )
 
             start = time.perf_counter()
-            inspection = self._inspect(user_text, candidate)
+            inspection = self._inspect(user_text, candidate, context=combined_context)
             stages["second_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if self._should_escalate(candidate, inspection):
                 start = time.perf_counter()
-                inspection = self._run_inspector(user_text, candidate, thinking=True)
+                inspection = self._run_inspector(
+                    user_text, candidate, thinking=True, context=combined_context,
+                )
                 stages["second_escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if inspection.hard_blocked:
                 risk = GuardrailResult(
@@ -1160,13 +1400,17 @@ class XiaoliaoAgent:
         if final_action is not None:
             start = time.perf_counter()
             try:
+                explicit_request = resolve_explicit_intent(user_text) is not None
                 recommendation = self.action_service.recommend(
                     user_id,
                     session_id,
                     final_action,
                     source_message_id=getattr(self.main_client, "last_request_id", None) or uuid.uuid4().hex,
+                    deduplicate=not explicit_request,
                 )
                 recommendation_id = recommendation.recommendation_id
+            except ActionAlreadyRecommended:
+                final_action = None
             except ActionContractError:
                 final_action = None
                 final_error_code = "action_policy_violation"

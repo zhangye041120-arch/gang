@@ -88,6 +88,15 @@ def test_all_action_modules_map_to_java_intents():
     assert normalize_intent("unknown", {"module": "M2"}) == "game"
     assert normalize_intent("unknown", {"module": "M3"}) == "exercise"
     assert normalize_intent("unknown", {"module": "M5"}) == "community"
+
+
+def test_api_lifespan_starts_checkin_scheduler_when_enabled():
+    settings = Settings(api_test_mode=True, wecom_checkin_reminder_enabled=True)
+    with TestClient(
+        create_app(fake_agent, settings=settings, api_token="test-token", test_mode=True)
+    ) as client:
+        response = client.get("/health")
+        assert response.status_code == 200
     assert normalize_intent("unknown", {"module": "M9"}) == "chat"
     assert normalize_intent("anything_else", None) == "chat"
 
@@ -147,3 +156,15 @@ def test_java_chat_returns_checkin_intent_when_model_only_returns_chat():
         }, headers=headers())
         assert response.status_code == 200
         assert response.json()["intent"] == "checkin"
+
+
+def test_java_chat_logs_conversation_events():
+    with TestClient(app()) as client:
+        response = client.post("/chat", json={
+            "userId": "user_events",
+            "message": "你好",
+            "conversationHistory": [],
+        }, headers=headers())
+        assert response.status_code == 200
+        events = client.app.state.user_data.repository.list_conversation_events("user_events")
+        assert len(events) == 2
