@@ -793,11 +793,24 @@ class XiaoliaoAgent:
             )
         return self._inspector_escalation_client or self.inspector_client
 
-    def _run_inspector(self, user_text: str, candidate: MainResponse, *, thinking: bool = False) -> InspectionResult:
+    def _run_inspector(
+        self,
+        user_text: str,
+        candidate: MainResponse,
+        *,
+        thinking: bool = False,
+        context: str = "",
+    ) -> InspectionResult:
         client = self._inspector_escalation_client_instance() if thinking else self.inspector_client
         try:
             raw = client.chat(
-                inspector_messages(user_text, candidate.reply, candidate.intent, self.settings.prompt_version),
+                inspector_messages(
+                    user_text,
+                    candidate.reply,
+                    candidate.intent,
+                    self.settings.prompt_version,
+                    context,
+                ),
                 json_mode=True,
             )
             inspection = parse_inspection(raw)
@@ -816,8 +829,14 @@ class XiaoliaoAgent:
             )
         return inspection
 
-    def _inspect(self, user_text: str, candidate: MainResponse) -> InspectionResult:
-        return self._run_inspector(user_text, candidate, thinking=False)
+    def _inspect(
+        self,
+        user_text: str,
+        candidate: MainResponse,
+        *,
+        context: str = "",
+    ) -> InspectionResult:
+        return self._run_inspector(user_text, candidate, thinking=False, context=context)
 
     def _should_escalate(self, candidate: MainResponse, inspection: InspectionResult) -> bool:
         if (
@@ -1059,9 +1078,11 @@ class XiaoliaoAgent:
             return
 
         # ── inspector ────────────────────────────────────────────
-        inspection = self._inspect(user_text, candidate)
+        inspection = self._inspect(user_text, candidate, context=combined_context)
         if self._should_escalate(candidate, inspection):
-            inspection = self._run_inspector(user_text, candidate, thinking=True)
+            inspection = self._run_inspector(
+                user_text, candidate, thinking=True, context=combined_context,
+            )
         rewritten = False
         final_reply = candidate.reply
 
@@ -1116,9 +1137,11 @@ class XiaoliaoAgent:
                        "safety_violation": result.safety_violation,
                        "rewritten": True, "latency_ms": latency}
                 return
-            inspection = self._inspect(user_text, candidate)
+            inspection = self._inspect(user_text, candidate, context=combined_context)
             if self._should_escalate(candidate, inspection):
-                inspection = self._run_inspector(user_text, candidate, thinking=True)
+                inspection = self._run_inspector(
+                    user_text, candidate, thinking=True, context=combined_context,
+                )
             if inspection.hard_blocked:
                 risk = GuardrailResult(
                     "crisis" if inspection.crisis_detected else "medical_boundary",
@@ -1255,11 +1278,13 @@ class XiaoliaoAgent:
             )
 
         start = time.perf_counter()
-        inspection = self._inspect(user_text, candidate)
+        inspection = self._inspect(user_text, candidate, context=combined_context)
         stages["inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if self._should_escalate(candidate, inspection):
             start = time.perf_counter()
-            inspection = self._run_inspector(user_text, candidate, thinking=True)
+            inspection = self._run_inspector(
+                user_text, candidate, thinking=True, context=combined_context,
+            )
             stages["escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if inspection.hard_blocked:
             risk = GuardrailResult(
@@ -1330,11 +1355,13 @@ class XiaoliaoAgent:
                 )
 
             start = time.perf_counter()
-            inspection = self._inspect(user_text, candidate)
+            inspection = self._inspect(user_text, candidate, context=combined_context)
             stages["second_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if self._should_escalate(candidate, inspection):
                 start = time.perf_counter()
-                inspection = self._run_inspector(user_text, candidate, thinking=True)
+                inspection = self._run_inspector(
+                    user_text, candidate, thinking=True, context=combined_context,
+                )
                 stages["second_escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if inspection.hard_blocked:
                 risk = GuardrailResult(

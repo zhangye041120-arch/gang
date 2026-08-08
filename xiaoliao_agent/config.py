@@ -67,7 +67,7 @@ class Settings:
     embedding_model: str = ""
     embedding_dimension: int = 1536
     knowledge_database_url: str = ""
-    prompt_version: str = "1.5.0"
+    prompt_version: str = "1.6.0"
     action_decline_cooldown_hours: int = 2
     quality_hash_salt: str = "xiaoliao-local-quality"
     api_token: str = ""
@@ -80,12 +80,26 @@ class Settings:
     crisis_retention_days: int = 365
     crisis_notification_attempts: int = 2
     crisis_referral_config_path: str = ""
+    wecom_corp_id: str = ""
+    wecom_agent_id: str = ""
+    wecom_agent_secret: str = ""
     wecom_callback_token: str = ""
     wecom_encoding_aes_key: str = ""
     wecom_active_greeting_enabled: bool = False
     wecom_active_greeting_max_per_day: int = 1
     wecom_active_greeting_recent_active_hours: float = 24.0
     wecom_dedup_retention_hours: int = 168
+    wecom_checkin_reminder_enabled: bool = False
+    wecom_checkin_group_webhook: str = ""
+    wecom_checkin_group_webhook_secret: str = ""
+    wecom_checkin_group_times: str = "09:00"
+    wecom_checkin_group_message: str = "小辽提醒：方便的时候花一分钟完成今天的情绪签到吧，记下此刻的心情就好，不用着急。"
+    wecom_checkin_group_mention_all: bool = False
+    wecom_checkin_group_mentioned_users: str = ""
+    wecom_checkin_group_mentioned_mobiles: str = ""
+    wecom_checkin_group_catch_up_minutes: int = 15
+    wecom_checkin_group_state_path: str = ""
+    wecom_checkin_group_user_schedule_path: str = ""
     memory_confidence_threshold: float = 0.8
     memory_max_items: int = 6
     memory_max_chars: int = 2000
@@ -135,7 +149,7 @@ class Settings:
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1536")),
             knowledge_database_url=os.getenv("KNOWLEDGE_DATABASE_URL", ""),
-            prompt_version=os.getenv("PROMPT_VERSION", "1.5.0"),
+            prompt_version=os.getenv("PROMPT_VERSION", "1.6.0"),
             action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "2")),
             quality_hash_salt=os.getenv("QUALITY_HASH_SALT", "xiaoliao-local-quality"),
             api_token=os.getenv("API_TOKEN", ""),
@@ -148,12 +162,26 @@ class Settings:
             crisis_retention_days=int(os.getenv("CRISIS_RETENTION_DAYS", "365")),
             crisis_notification_attempts=int(os.getenv("CRISIS_NOTIFICATION_ATTEMPTS", "2")),
             crisis_referral_config_path=os.getenv("CRISIS_REFERRAL_CONFIG_PATH", ""),
+            wecom_corp_id=os.getenv("WECOM_CORP_ID", ""),
+            wecom_agent_id=os.getenv("WECOM_AGENT_ID", ""),
+            wecom_agent_secret=os.getenv("WECOM_AGENT_SECRET", ""),
             wecom_callback_token=os.getenv("WECOM_CALLBACK_TOKEN", ""),
             wecom_encoding_aes_key=os.getenv("WECOM_ENCODING_AES_KEY", ""),
             wecom_active_greeting_enabled=os.getenv("WECOM_ACTIVE_GREETING_ENABLED", "false").strip().lower() == "true",
             wecom_active_greeting_max_per_day=int(os.getenv("WECOM_ACTIVE_GREETING_MAX_PER_DAY", "1")),
             wecom_active_greeting_recent_active_hours=float(os.getenv("WECOM_ACTIVE_GREETING_RECENT_ACTIVE_HOURS", "24")),
             wecom_dedup_retention_hours=int(os.getenv("WECOM_DEDUP_RETENTION_HOURS", "168")),
+            wecom_checkin_reminder_enabled=os.getenv("WECOM_CHECKIN_REMINDER_ENABLED", "false").strip().lower() == "true",
+            wecom_checkin_group_webhook=os.getenv("WECOM_CHECKIN_GROUP_WEBHOOK", ""),
+            wecom_checkin_group_webhook_secret=os.getenv("WECOM_CHECKIN_GROUP_WEBHOOK_SECRET", ""),
+            wecom_checkin_group_times=os.getenv("WECOM_CHECKIN_GROUP_TIMES", "09:00"),
+            wecom_checkin_group_message=os.getenv("WECOM_CHECKIN_GROUP_MESSAGE", "小辽提醒：方便的时候花一分钟完成今天的情绪签到吧，记下此刻的心情就好，不用着急。"),
+            wecom_checkin_group_mention_all=os.getenv("WECOM_CHECKIN_GROUP_MENTION_ALL", "false").strip().lower() == "true",
+            wecom_checkin_group_mentioned_users=os.getenv("WECOM_CHECKIN_GROUP_MENTIONED_USERS", ""),
+            wecom_checkin_group_mentioned_mobiles=os.getenv("WECOM_CHECKIN_GROUP_MENTIONED_MOBILES", ""),
+            wecom_checkin_group_catch_up_minutes=int(os.getenv("WECOM_CHECKIN_GROUP_CATCH_UP_MINUTES", "15")),
+            wecom_checkin_group_state_path=os.getenv("WECOM_CHECKIN_GROUP_STATE_PATH", ""),
+            wecom_checkin_group_user_schedule_path=os.getenv("WECOM_CHECKIN_GROUP_USER_SCHEDULE_PATH", ""),
             memory_confidence_threshold=float(os.getenv("MEMORY_CONFIDENCE_THRESHOLD", "0.8")),
             memory_max_items=int(os.getenv("MEMORY_MAX_ITEMS", "6")),
             memory_max_chars=int(os.getenv("MEMORY_MAX_CHARS", "2000")),

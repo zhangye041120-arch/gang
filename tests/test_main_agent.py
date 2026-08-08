@@ -152,7 +152,7 @@ def test_stage_latencies_are_recorded_for_main_pipeline():
         assert stage in result.stage_latencies
         assert result.stage_latencies[stage] >= 0
     assert result.main_model == "deepseek-v4-flash"
-    assert result.prompt_version == "1.5.0"
+    assert result.prompt_version == "1.6.0"
     assert "timeout" not in result.reply.lower()
 
 

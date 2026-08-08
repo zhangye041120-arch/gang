@@ -42,6 +42,32 @@ class FakeInspectorClient:
         }, ensure_ascii=False)
 
 
+class RecordingMainClient(FakeMainClient):
+    def __init__(self):
+        self.messages = []
+
+    def chat(self, messages, *, json_mode=False):
+        self.messages.append(messages)
+        return super().chat(messages, json_mode=json_mode)
+
+
+class RecordingInspectorClient(FakeInspectorClient):
+    def __init__(self):
+        self.messages = []
+
+    def chat(self, messages, *, json_mode=False):
+        self.messages.append(messages)
+        return super().chat(messages, json_mode=json_mode)
+
+
+def extract_tag(content: str, tag: str) -> str:
+    start = f"<{tag}>\n"
+    end = f"\n</{tag}>"
+    if start not in content or end not in content:
+        return ""
+    return content.split(start, 1)[1].split(end, 1)[0]
+
+
 class ExplodingKnowledgeBase:
     def context(self, *args, **kwargs):
         raise AssertionError("危机输入不应进入知识检索")
@@ -137,6 +163,39 @@ def test_agent_pipeline_contract():
     assert result.action["module"] == "M1"
     assert result.recommendation_id
     assert not result.blocked
+
+
+def test_main_and_inspector_receive_same_rag_context():
+    main = RecordingMainClient()
+    inspector = RecordingInspectorClient()
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=inspector,
+    )
+    result = agent.chat("我最近有点累")
+    assert result.reply
+    assert len(main.messages) == 1
+    assert len(inspector.messages) == 1
+    main_rag = extract_tag(main.messages[0][-1]["content"], "untrusted_rag")
+    inspector_rag = extract_tag(inspector.messages[0][-1]["content"], "untrusted_rag")
+    assert main_rag
+    assert main_rag == inspector_rag
+
+
+def test_escalated_inspector_receives_rag_context():
+    thinking = RecordingInspectorClient()
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=FakeMainClient(),
+        inspector_client=SoftFailInspectorClient(),
+        inspector_escalation_client=thinking,
+    )
+    result = agent.chat("我最近有点累")
+    assert not result.blocked
+    assert thinking.messages
+    inspector_rag = extract_tag(thinking.messages[0][-1]["content"], "untrusted_rag")
+    assert inspector_rag
 
 
 def test_same_session_does_not_recommend_same_module_twice():

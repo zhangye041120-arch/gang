@@ -4,6 +4,7 @@ from dataclasses import replace
 from hashlib import sha256
 import hmac
 import json
+import logging
 import uuid
 from time import monotonic
 from re import fullmatch
@@ -28,6 +29,10 @@ from xiaoliao_agent.api_contract import (
     error_body,
     fingerprint,
 )
+from xiaoliao_agent.checkin_reminder import (
+    DailyCheckinService,
+    checkin_policy_from_settings,
+)
 from xiaoliao_agent.user_data import (
     MemoryUserRepository,
     PostgresUserRepository,
@@ -36,6 +41,8 @@ from xiaoliao_agent.user_data import (
 
 
 Intent = Literal["chat", "checkin", "game", "exercise", "assessment", "community"]
+
+logger = logging.getLogger("xiaoliao.api")
 
 bearer_auth = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
 
@@ -237,7 +244,43 @@ def create_app(
                 memory_service=getattr(app.state.agent, "memory_service", None),
             )
         app.state.idempotency = IdempotencyCoordinator()
+        app.state.checkin_reminder = None
+        app.state.checkin_reminder_task = None
+        if config.wecom_checkin_reminder_enabled:
+            checkin_policy = checkin_policy_from_settings(config)
+            if checkin_policy.user_schedules and not (
+                config.wecom_corp_id
+                and config.wecom_agent_id
+                and config.wecom_agent_secret
+            ):
+                raise RuntimeError(
+                    "用户级签到提醒需要 WECOM_CORP_ID / WECOM_AGENT_ID / WECOM_AGENT_SECRET"
+                )
+            app.state.checkin_reminder = DailyCheckinService(
+                checkin_policy
+            )
+
+            async def checkin_loop() -> None:
+                while True:
+                    try:
+                        events = await run_in_threadpool(
+                            app.state.checkin_reminder.run_due
+                        )
+                        for event in events:
+                            if event.get("status") in {"sent", "failed"}:
+                                logger.warning("checkin reminder %s", event)
+                    except Exception:
+                        logger.exception("checkin reminder loop error")
+                    await asyncio.sleep(60)
+
+            app.state.checkin_reminder_task = asyncio.create_task(checkin_loop())
         yield
+        if app.state.checkin_reminder_task is not None:
+            app.state.checkin_reminder_task.cancel()
+            try:
+                await app.state.checkin_reminder_task
+            except asyncio.CancelledError:
+                pass
 
     app = FastAPI(
         title="小辽 M7 Agent API",

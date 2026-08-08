@@ -1,8 +1,8 @@
 {
   "default_versions": {
-    "main-agent": "1.5.0",
-    "inspector": "1.5.0",
-    "rewrite": "1.5.0"
+    "main-agent": "1.6.0",
+    "inspector": "1.6.0",
+    "rewrite": "1.6.0"
   },
   "prompts": [
     {
@@ -194,6 +194,36 @@
       "scope": "Inspector 软失败后的主 Agent 重写",
       "created_at": "2026-08-07T23:00:00+08:00",
       "rollback_to": "1.4.0"
+    },
+    {
+      "prompt_id": "main-agent",
+      "semantic_version": "1.6.0",
+      "content_file": "main-agent-1.6.0.txt",
+      "changelog": "与 Inspector 1.6.0 协同发布，主合同无行为变化",
+      "owner": "xiaoliao-agent",
+      "scope": "主 Agent 候选回复",
+      "created_at": "2026-08-08T09:30:00+08:00",
+      "rollback_to": "1.5.0"
+    },
+    {
+      "prompt_id": "inspector",
+      "semantic_version": "1.6.0",
+      "content_file": "inspector-1.6.0.txt",
+      "changelog": "副 Agent 与主 Agent 共用同一份 RAG 上下文，依据知识库校验候选回复",
+      "owner": "xiaoliao-safety",
+      "scope": "Qwen 候选回复质检",
+      "created_at": "2026-08-08T09:30:00+08:00",
+      "rollback_to": "1.5.0"
+    },
+    {
+      "prompt_id": "rewrite",
+      "semantic_version": "1.6.0",
+      "content_file": "rewrite-1.6.0.txt",
+      "changelog": "与 Inspector 1.6.0 协同发布，重写时同样参考同一份 RAG",
+      "owner": "xiaoliao-agent",
+      "scope": "Inspector 软失败后的主 Agent 重写",
+      "created_at": "2026-08-08T09:30:00+08:00",
+      "rollback_to": "1.5.0"
     },
     {
       "prompt_id": "inspector",

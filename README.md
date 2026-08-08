@@ -6,9 +6,9 @@
 
 ```text
 用户消息
-  -> CBT 知识库检索
-  -> DeepSeek V4 Flash 主 Agent
-  -> Qwen 3.7 Flash 副 Agent 质检（关闭思考模式）
+  -> 同一份 RAG 检索（CBT 知识库、教训、提醒、实时事实）
+  -> DeepSeek V4 Flash 主 Agent 生成候选回复
+  -> Qwen 3.7 Flash 副 Agent 同读这份 RAG 后质检主 Agent 回复（关闭思考模式）
   -> 危机/安全硬拦截，或软性问题重写一次
   -> 返回回复、行动建议和检验信息
 ```
@@ -61,6 +61,8 @@ INSPECTOR_ENABLE_THINKING=false
 - Qwen3.7 系列默认开启思考模式，Inspector 延迟实测约 5-16 秒，是全链路主要瓶颈。
 - Inspector 只做结构化安全质检（危机、医疗边界、意图、适老），不需要长思考链，
   关闭思考模式可显著降低延迟，同时保留质检能力。
+- 主、副模型共用同一份 RAG 上下文：副 Agent 依据知识库判断候选回复是否遵循
+  CBT 指引、是否遗漏关键原则；RAG 为空时仍按通用安全陪伴原则检查。
 - 快检不再单独做最终裁决：只要快检出现 `issues`、软性不合格、非 `none` 的
   `error_pattern`，或主模型返回非 `none` 的 `risk_hint`，会自动升级为开思考的
   强检复核（`INSPECTOR_ESCALATE_ON_ISSUES=true`）。普通对话保持快检，存疑内容
@@ -184,6 +186,26 @@ RAG_PARALLEL_ENABLED=true
 以上新知识文件已进入本地内存 RAG，并已导入数据库向量库：
 `python import_knowledge.py` 新增 11 块，`python backfill_embeddings.py` 回填 11 个
 向量，当前 `ai_knowledge_chunks` 为 110 行且 110/110 有 1536 维向量。
+
+## 5.3 企微员工群每日签到提醒
+
+小辽可以通过企业微信“群机器人 Webhook”给内部员工群每天定时发送签到提醒。
+员工群不经过微信客服通道，不受“48 小时回复窗口、最多 5 条”的限制，可以
+每天固定时间推送。功能默认关闭，配置项见 `.env.example` 的
+`WECOM_CHECKIN_REMINDER_ENABLED` 等变量，详细策略见
+[docs/签到提醒策略.md](docs/签到提醒策略.md)。提醒按 PRD 中 M1 情绪签到
+定位设计：温和、不催促，作为养成每日记录习惯的固定线索。配置
+`WECOM_CHECKIN_GROUP_USER_SCHEDULE_PATH` 后可按每个用户自己的习惯时间
+分别提醒，到点通过企业微信应用消息发送私信，不在群里 @ 用户；需要
+`WECOM_CORP_ID`、`WECOM_AGENT_ID`、`WECOM_AGENT_SECRET`。未配置用户级
+时间表时回退到群统一时间。
+
+开启后 API 进程会每 60 秒检查一次北京时间，到点发送一次；同一日期同一
+时间点幂等，发送失败不记录成功并在补发窗口内重试。手动验证：
+
+```bash
+python 运行/run_checkin_reminder.py --once
+```
 
 ## 6. 重要边界
 
