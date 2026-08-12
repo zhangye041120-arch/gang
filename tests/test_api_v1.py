@@ -9,7 +9,7 @@ from tests.test_agent_pipeline import FakeInspectorClient, FakeMainClient
 from tests.test_main_agent import ChatOnlyMainClient
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.schemas import AgentResult, InspectionResult
+from xiaoliao_agent.api_contract import AgentResult, InspectionResult
 
 
 def fake_agent():

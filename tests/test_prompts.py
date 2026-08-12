@@ -2,7 +2,7 @@ import pytest
 import json
 from pathlib import Path
 
-from xiaoliao_agent.prompt_registry import (
+from xiaoliao_agent.prompts import (
     PromptVersionError,
     get_fallback_reply,
     get_prompt_spec,
@@ -10,7 +10,7 @@ from xiaoliao_agent.prompt_registry import (
     select_prompt_version,
 )
 from xiaoliao_agent.prompts import inspector_messages, main_messages, rewrite_messages
-from xiaoliao_agent.schemas import InspectionResult
+from xiaoliao_agent.api_contract import InspectionResult
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
 

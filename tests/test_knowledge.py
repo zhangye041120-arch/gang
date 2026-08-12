@@ -2,8 +2,8 @@ from pathlib import Path
 import json
 
 from xiaoliao_agent.knowledge import KnowledgeBase, _source_name, split_markdown
-from xiaoliao_agent.knowledge_repository import MemoryKnowledgeRepository
-from xiaoliao_agent.knowledge_import import import_files
+from xiaoliao_agent.knowledge import MemoryKnowledgeRepository
+from xiaoliao_agent.knowledge import import_files
 
 
 def test_split_markdown_creates_chunks():

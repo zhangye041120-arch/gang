@@ -2,8 +2,8 @@ import argparse
 from pathlib import Path
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.knowledge_import import import_files
-from xiaoliao_agent.knowledge_repository import MemoryKnowledgeRepository, PostgresKnowledgeRepository
+from xiaoliao_agent.knowledge import import_files
+from xiaoliao_agent.knowledge import MemoryKnowledgeRepository, PostgresKnowledgeRepository
 
 
 def main() -> int:

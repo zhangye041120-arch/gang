@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from xiaoliao_agent.client import (
+from xiaoliao_agent.providers import (
     ModelHTTPError,
     ModelInvalidResponseError,
     ModelNetworkError,

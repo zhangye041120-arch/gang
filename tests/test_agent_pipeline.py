@@ -2,7 +2,7 @@
 import pytest
 
 from xiaoliao_agent.agent import XiaoliaoAgent
-from xiaoliao_agent.client import ModelNetworkError
+from xiaoliao_agent.providers import ModelNetworkError
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.live_context import LiveContext
 from xiaoliao_agent.reminders import ReminderService

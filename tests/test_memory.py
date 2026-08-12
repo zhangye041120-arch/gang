@@ -9,7 +9,7 @@ from xiaoliao_agent.memory import (
     MemoryService,
     SensitiveConsentRequiredError,
 )
-from xiaoliao_agent.memory_repository import MemoryMemoryRepository, MemoryVectorIndex
+from xiaoliao_agent.memory import MemoryMemoryRepository, MemoryVectorIndex
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
 import json

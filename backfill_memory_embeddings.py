@@ -16,8 +16,8 @@ import sys
 import psycopg
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.embeddings import EmbeddingError, OpenAICompatibleEmbeddingClient
-from xiaoliao_agent.memory_repository import PostgresMemoryRepository
+from xiaoliao_agent.providers import EmbeddingError, OpenAICompatibleEmbeddingClient
+from xiaoliao_agent.memory import PostgresMemoryRepository
 
 
 def main() -> int:

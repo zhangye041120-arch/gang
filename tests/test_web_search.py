@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.web_search import (
+from xiaoliao_agent.live_context import (
     WebSearchError,
     WebSearchUnconfiguredError,
     format_search_context,
@@ -116,7 +116,7 @@ def test_dashscope_defaults_to_30_day_freshness():
 
 
 def test_freshness_clamps_to_valid_dashscope_values():
-    from xiaoliao_agent.web_search import _clamp_freshness
+    from xiaoliao_agent.live_context import _clamp_freshness
     assert _clamp_freshness(1) == 7   # nearest to 7
     assert _clamp_freshness(7) == 7
     assert _clamp_freshness(15) == 7  # |15-7|=8 < |15-30|=15

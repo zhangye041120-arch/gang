@@ -1,6 +1,6 @@
 import pytest
 
-from xiaoliao_agent.aging import apply_aging_filter
+from xiaoliao_agent.text_utils import apply_aging_filter
 from xiaoliao_agent.guardrails import precheck, MEDICAL_DISCLAIMER
 
 

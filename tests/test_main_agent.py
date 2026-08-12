@@ -3,7 +3,7 @@ import json
 import pytest
 
 from xiaoliao_agent.agent import AgentInvalidResponseError, XiaoliaoAgent, parse_main, to_java_intent
-from xiaoliao_agent.client import ModelTimeoutError
+from xiaoliao_agent.providers import ModelTimeoutError
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.guardrails import GENERIC_FALLBACK
 

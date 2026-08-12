@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from xiaoliao_agent.actions import ActionEvent, ActionService, MemoryActionRepository
-from xiaoliao_agent.active_greeting import (
+from xiaoliao_agent.reminders import (
     GreetingPolicy,
     GreetingService,
     GreetingState,
@@ -14,14 +14,14 @@ from xiaoliao_agent.active_greeting import (
     greeting_policy_from_settings,
 )
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.crisis_referral import (
+from xiaoliao_agent.crisis import (
     CrisisReferralConfig,
     CrisisReferralRoute,
     CrisisReferralService,
     load_crisis_referral_config,
 )
 from xiaoliao_agent.memory import MemoryMemoryRepository, MemoryService
-from xiaoliao_agent.notifications import CrisisNotifier
+from xiaoliao_agent.crisis import CrisisNotifier
 from xiaoliao_agent.wecom import (
     MessageDedupStore,
     MessageOrderStore,
@@ -31,7 +31,7 @@ from xiaoliao_agent.wecom import (
     decrypt_callback,
     verify_callback_signature,
 )
-from xiaoliao_agent.action_events import UnknownActionModuleError, handle_action_event
+from xiaoliao_agent.actions import UnknownActionModuleError, handle_action_event
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

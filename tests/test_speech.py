@@ -1,4 +1,4 @@
-from xiaoliao_agent.speech import DashScopeTTSClient, TTSClientError
+from xiaoliao_agent.providers import DashScopeTTSClient, TTSClientError
 
 
 class FakeResponse:

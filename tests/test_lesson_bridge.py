@@ -1,4 +1,4 @@
-from xiaoliao_agent.lesson_bridge import LessonBridge
+from xiaoliao_agent.quality import LessonBridge
 from xiaoliao_agent.quality import MemoryQualityRepository
 
 

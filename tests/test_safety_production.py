@@ -4,9 +4,9 @@ import pytest
 
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.crisis_repository import MemoryCrisisEventRepository
+from xiaoliao_agent.crisis import MemoryCrisisEventRepository
 from xiaoliao_agent.guardrails import CRISIS_FALLBACK, UNSAFE_FALLBACK, precheck
-from xiaoliao_agent.notifications import CrisisNotifier
+from xiaoliao_agent.crisis import CrisisNotifier
 
 
 @pytest.mark.parametrize(("text", "expected", "rule_prefix"), [

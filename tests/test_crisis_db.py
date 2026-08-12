@@ -1,7 +1,7 @@
 import pytest
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.crisis_repository import PostgresCrisisEventRepository, new_crisis_event
+from xiaoliao_agent.crisis import PostgresCrisisEventRepository, new_crisis_event
 
 
 DATABASE_URL = Settings.from_env().knowledge_database_url

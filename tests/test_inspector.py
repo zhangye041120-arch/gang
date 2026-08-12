@@ -3,14 +3,14 @@ import json
 import pytest
 
 from xiaoliao_agent.agent import AgentInvalidInspectionError, XiaoliaoAgent, parse_inspection
-from xiaoliao_agent.client import ModelTimeoutError
+from xiaoliao_agent.providers import ModelTimeoutError
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.guardrails import (
     CRISIS_FALLBACK,
     GENERIC_FALLBACK,
     MEDICAL_DISCLAIMER,
 )
-from xiaoliao_agent.inspection_repository import MemoryLessonRepository
+from xiaoliao_agent.quality import MemoryLessonRepository
 
 
 def main_payload(reply):

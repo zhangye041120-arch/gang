@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from xiaoliao_agent.checkin_reminder import (
+from xiaoliao_agent.reminders import (
     CheckinReminderPolicy,
     CheckinUserSchedule,
     DailyCheckinService,

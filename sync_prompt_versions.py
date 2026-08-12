@@ -4,7 +4,7 @@ import json
 import psycopg
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.prompt_registry import PROMPT_ROOT
+from xiaoliao_agent.prompts import PROMPT_ROOT
 
 
 def main() -> int:

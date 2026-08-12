@@ -4,7 +4,7 @@ import pytest
 
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.memory import MemoryCandidate, MemoryService
-from xiaoliao_agent.memory_repository import PostgresMemoryRepository
+from xiaoliao_agent.memory import PostgresMemoryRepository
 
 
 DATABASE_URL = Settings.from_env().knowledge_database_url

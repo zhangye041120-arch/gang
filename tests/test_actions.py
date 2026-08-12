@@ -11,8 +11,8 @@ from xiaoliao_agent.actions import (
     MemoryActionRepository,
 )
 from xiaoliao_agent.memory import MemoryCandidate, MemoryService
-from xiaoliao_agent.memory_repository import MemoryMemoryRepository
-from xiaoliao_agent.schemas import ActionPayload
+from xiaoliao_agent.memory import MemoryMemoryRepository
+from xiaoliao_agent.api_contract import ActionPayload
 
 
 def valid_action(module="M1", **overrides):

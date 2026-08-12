@@ -11,9 +11,9 @@ import warnings
 
 from pydantic import ValidationError
 
-from .client import ModelClientError, OpenAICompatibleClient
+from .providers import ModelClientError, OpenAICompatibleClient
 from .config import Settings
-from .crisis_repository import (
+from .crisis import (
     MemoryCrisisEventRepository,
     PostgresCrisisEventRepository,
     new_crisis_event,
@@ -35,22 +35,22 @@ from .guardrails import (
     medical_input_matches,
     precheck,
 )
-from .aging import apply_aging_filter
+from .text_utils import apply_aging_filter
 from .live_context import LiveContext, fetch_live_context
-from .inspection_repository import MemoryLessonRepository
+from .quality import MemoryLessonRepository
 from .knowledge import KnowledgeBase
-from .knowledge_repository import PostgresKnowledgeRepository
-from .embeddings import DashScopeRerankClient, OpenAICompatibleEmbeddingClient
-from .lesson_bridge import LessonBridge
+from .knowledge import PostgresKnowledgeRepository
+from .providers import DashScopeRerankClient, OpenAICompatibleEmbeddingClient
+from .quality import LessonBridge
 from .memory import MemoryCandidate, MemoryService
-from .memory_repository import MemoryMemoryRepository, PostgresMemoryRepository
+from .memory import MemoryMemoryRepository, PostgresMemoryRepository
 from .text_utils import chunk_by_graphemes
-from .notifications import CrisisNotifier
+from .crisis import CrisisNotifier
 from .quality import InspectionLog, MemoryQualityRepository, PostgresQualityRepository, QualityService
 from .prompts import inspector_messages, main_messages, rewrite_messages
-from .prompt_registry import get_fallback_reply, get_prompt_spec
+from .prompts import get_fallback_reply, get_prompt_spec
 from .reminders import MemoryReminderRepository, ReminderService, parse_reminder_request
-from .schemas import (
+from .api_contract import (
     INSPECTION_ERROR_PATTERNS,
     ActionPayload,
     AgentResult,
@@ -580,7 +580,7 @@ class XiaoliaoAgent:
             and self.settings.wecom_agent_id
             and self.settings.wecom_agent_secret
         ):
-            from .wecom_outbound import WeComAppMessageSender
+            from .wecom import WeComAppMessageSender
 
             sender = WeComAppMessageSender(
                 self.settings.wecom_corp_id,
@@ -603,7 +603,7 @@ class XiaoliaoAgent:
         )
         self.tts_client = None
         if self.settings.tts_enabled and self.settings.qwen_api_key:
-            from .speech import DashScopeTTSClient
+            from .providers import DashScopeTTSClient
 
             self.tts_client = DashScopeTTSClient(
                 self.settings.qwen_api_key,

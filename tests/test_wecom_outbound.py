@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from xiaoliao_agent.wecom_outbound import (
+from xiaoliao_agent.wecom import (
     WeComAppMessageError,
     WeComAppMessageSender,
     WeComWebhookError,

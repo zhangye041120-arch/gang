@@ -1,7 +1,7 @@
 import argparse
 import difflib
 
-from xiaoliao_agent.prompt_registry import get_prompt_spec
+from xiaoliao_agent.prompts import get_prompt_spec
 
 
 def main() -> int:

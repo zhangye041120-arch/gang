@@ -4,7 +4,7 @@ import json
 import psycopg
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.embeddings import EmbeddingError, OpenAICompatibleEmbeddingClient
+from xiaoliao_agent.providers import EmbeddingError, OpenAICompatibleEmbeddingClient
 from xiaoliao_agent.knowledge import KnowledgeBase
 
 

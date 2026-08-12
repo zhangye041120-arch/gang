@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from xiaoliao_agent.embeddings import (
+from xiaoliao_agent.providers import (
     DashScopeRerankClient,
     EmbeddingError,
     OpenAICompatibleEmbeddingClient,
@@ -28,7 +28,7 @@ class FakeResponse:
 
 def test_embedding_response_is_ordered_and_dimension_checked(monkeypatch):
     monkeypatch.setattr(
-        "xiaoliao_agent.embeddings.urlopen",
+        "xiaoliao_agent.providers.urlopen",
         lambda *args, **kwargs: FakeResponse({"data": [
             {"index": 1, "embedding": [0.2, 0.3]},
             {"index": 0, "embedding": [0.1, 0.2]},
@@ -40,7 +40,7 @@ def test_embedding_response_is_ordered_and_dimension_checked(monkeypatch):
 
 def test_embedding_dimension_mismatch_fails_before_database_write(monkeypatch):
     monkeypatch.setattr(
-        "xiaoliao_agent.embeddings.urlopen",
+        "xiaoliao_agent.providers.urlopen",
         lambda *args, **kwargs: FakeResponse({"data": [{"index": 0, "embedding": [0.1]}]}),
     )
     client = OpenAICompatibleEmbeddingClient("https://embedding.invalid/v1", "key", "model", dimension=2)
@@ -50,7 +50,7 @@ def test_embedding_dimension_mismatch_fails_before_database_write(monkeypatch):
 
 def test_rerank_returns_scores_in_input_order(monkeypatch):
     monkeypatch.setattr(
-        "xiaoliao_agent.embeddings.urlopen",
+        "xiaoliao_agent.providers.urlopen",
         lambda *args, **kwargs: FakeResponse({"output": {"results": [
             {"index": 2, "relevance_score": 0.9},
             {"index": 0, "relevance_score": 0.8},
@@ -63,7 +63,7 @@ def test_rerank_returns_scores_in_input_order(monkeypatch):
 
 def test_rerank_rejects_incomplete_contract(monkeypatch):
     monkeypatch.setattr(
-        "xiaoliao_agent.embeddings.urlopen",
+        "xiaoliao_agent.providers.urlopen",
         lambda *args, **kwargs: FakeResponse({"output": {"results": [
             {"index": 0, "relevance_score": 0.5},
         ]}}),

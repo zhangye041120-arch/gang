@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from xiaoliao_agent.checkin_reminder import (
+from xiaoliao_agent.reminders import (
     DailyCheckinService,
     checkin_policy_from_settings,
 )

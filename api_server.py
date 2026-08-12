@@ -29,7 +29,7 @@ from xiaoliao_agent.api_contract import (
     error_body,
     fingerprint,
 )
-from xiaoliao_agent.checkin_reminder import (
+from xiaoliao_agent.reminders import (
     DailyCheckinService,
     checkin_policy_from_settings,
 )
