@@ -299,6 +299,20 @@ def test_explicit_age_is_not_saved_without_consent():
     assert repository.list_for_user("user-no-consent") == []
 
 
+def test_personal_facts_extract_age_zodiac_and_occupation():
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=EchoMainClient(),
+        inspector_client=PassingInspector(),
+    )
+    facts = agent._extract_personal_facts("我七十多了，我属龙，我是教书的")
+    keys = {key for _, key, _ in facts}
+    assert "用户年龄：" in keys
+    assert "用户生肖：" in keys
+    assert "用户职业：" in keys
+    assert any("七十多岁" in content for _, _, content in facts)
+
+
 class SemanticRepository(MemoryMemoryRepository):
     def __init__(self):
         super().__init__()

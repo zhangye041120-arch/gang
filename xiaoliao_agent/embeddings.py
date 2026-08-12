@@ -9,6 +9,10 @@ class EmbeddingError(RuntimeError):
     pass
 
 
+class RerankError(RuntimeError):
+    pass
+
+
 class OpenAICompatibleEmbeddingClient:
     def __init__(self, base_url: str, api_key: str, model: str, *, dimension: int, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
@@ -55,3 +59,67 @@ class OpenAICompatibleEmbeddingClient:
                 f"embedding dimension mismatch expected={self.dimension} actual={actual} request_id={request_id}"
             )
         return vectors
+
+
+class DashScopeRerankClient:
+    """Rerank candidate documents against a query with the DashScope native API."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "qwen3-rerank",
+        *,
+        base_url: str = "https://dashscope.aliyuncs.com/api/v1",
+        timeout: float = 30.0,
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def rerank(self, query: str, documents: list[str]) -> list[float]:
+        """Return relevance scores in the same order as *documents*."""
+        if not documents:
+            return []
+        request_id = uuid.uuid4().hex
+        request = Request(
+            f"{self.base_url}/services/rerank/text-rerank/text-rerank",
+            data=json.dumps(
+                {
+                    "model": self.model,
+                    "input": {"query": query, "documents": documents},
+                    "parameters": {"top_n": len(documents)},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "X-Request-ID": request_id,
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RerankError(f"rerank HTTP {exc.code} request_id={request_id}") from exc
+        except URLError as exc:
+            raise RerankError(f"rerank network unavailable request_id={request_id}") from exc
+        except (TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RerankError(f"rerank response invalid request_id={request_id}") from exc
+        try:
+            results = body["output"]["results"]
+            scores = [0.0] * len(documents)
+            seen: set[int] = set()
+            for item in results:
+                index = int(item["index"])
+                if index < 0 or index >= len(documents) or index in seen:
+                    raise RerankError(f"rerank response contract invalid request_id={request_id}")
+                seen.add(index)
+                scores[index] = float(item["relevance_score"])
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise RerankError(f"rerank response contract invalid request_id={request_id}") from exc
+        if len(seen) != len(documents):
+            raise RerankError(f"rerank response contract invalid request_id={request_id}")
+        return scores

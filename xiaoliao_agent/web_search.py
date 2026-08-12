@@ -109,8 +109,18 @@ def _duckduckgo(client: httpx.Client, query: str, max_results: int) -> list[dict
     return results[:max_results]
 
 
-def _dashscope(client: httpx.Client, query: str, settings: Settings) -> list[dict[str, str]]:
+_VALID_FRESHNESS = (7, 30, 180, 365)
+
+
+def _clamp_freshness(days: int) -> int:
+    """Map *days* to the nearest valid DashScope freshness value."""
+    return min(_VALID_FRESHNESS, key=lambda v: abs(v - days))
+
+
+def _dashscope(client: httpx.Client, query: str, settings: Settings, *, freshness: int = 30) -> list[dict[str, str]]:
     base_url = settings.qwen_base_url.rstrip("/")
+    # DashScope only accepts [7, 30, 180, 365]; map to nearest valid value.
+    clamped = _clamp_freshness(freshness)
     response = client.post(
         f"{base_url}/chat/completions",
         headers={
@@ -124,7 +134,7 @@ def _dashscope(client: httpx.Client, query: str, settings: Settings) -> list[dic
             "search_options": {
                 "search_strategy": "turbo",
                 "forced_search": settings.web_search_forced_search,
-                "freshness": 30,
+                "freshness": clamped,
             },
         },
     )
@@ -146,8 +156,12 @@ def search_web(
     query: str,
     settings: Settings,
     client: httpx.Client | None = None,
+    *,
+    freshness: int = 30,
 ) -> list[dict[str, str]]:
-    """Return [{title, url, snippet}] for a query, raising on failure."""
+    """Return [{title, url, snippet}] for a query, raising on failure.
+
+    *freshness* is days (DashScope only); clamped to 1-365."""
     provider = settings.web_search_provider.strip().lower()
     api_key = settings.web_search_api_key.strip()
     if provider == "dashscope":
@@ -182,7 +196,7 @@ def search_web(
         elif provider == "duckduckgo":
             results = _duckduckgo(client, query, settings.web_search_max_results)
         elif provider == "dashscope":
-            results = _dashscope(client, query, settings)
+            results = _dashscope(client, query, settings, freshness=freshness)
         else:
             raise WebSearchError(f"未知联网搜索提供商：{provider}")
     except WebSearchError:

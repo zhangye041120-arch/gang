@@ -18,6 +18,13 @@ CRISIS_RULES = (
     RiskRule("C003", r"已经(?:想好|准备好|准备)|具体做法|自杀计划"),
     RiskRule("C004", r"伤害自己|自残|割腕"),
     RiskRule("C005", r"一点希望都没有|彻底绝望"),
+    RiskRule("C006", r"拖累(?:孩子|儿女|家人|儿子|女儿|别人|大家)|(?:家里|孩子|儿女)的?(?:拖累|累赘)|是(?:个|大家的)?(?:累赘|负担)"),
+    RiskRule("C007", r"(?:一觉|睡)(?:过去|着)?(?:就)?(?:别|不要|不)(?:醒|起来)|(?:睡着了|睡下去)(?:就)?(?:别|不要|不)(?:醒|起来)"),
+    RiskRule("C008", r"活着(?:就是|只会|只是|也是)?(?:拖累|负担|给别人添麻烦)|(?:我)?(?:就是|是个)(?:大家的|家里的)?(?:累赘|负担)"),
+    RiskRule("C009", r"(?:没|没有|要是没|要没)(?:有)?我(?:你们|大家|家人)?(?:会|就|也)?(?:更|过得)?(?:好|轻松)|(?:最好|不如|巴不得)(?:一觉)?(?:睡过去|睡着|闭眼)(?:别醒|不再醒|醒不来)"),
+    RiskRule("C010", r"活够了|活到头了|早点(?:走|解脱)|一了百了"),
+    RiskRule("C011", r"(?:没|没有)(?:了)?我?(?:，|,)?(?:他们|大家|你们|家人)?(?:会|就|也)?(?:过)?(?:得)?(?:更好|更轻松|更省心)|(?:我|我要是|要是)(?:没了|不在|走了)(?:，|,)?(?:他们|大家|你们|家人)(?:会|就|也)?(?:过)?(?:得)?(?:更好|更轻松|更省心)"),
+    RiskRule("C012", r"(?:是|成了|成为|变成|觉得自己是|觉得我是个)(?:大家的|家里的|个)?累赘|很累赘"),
 )
 
 # 医疗边界只拦明确的个人诊断/用药/停药/治疗决策；陈述、提醒、科普和转述医嘱不拦截。
@@ -95,6 +102,11 @@ def _matches(text: str, rules: tuple[RiskRule, ...]) -> list[str]:
     return [rule.rule_id for rule in rules if re.search(rule.pattern, text, re.I)]
 
 
+def medical_input_matches(text: str) -> list[str]:
+    """Return rule IDs for explicit personal diagnosis/medication/treatment requests."""
+    return _matches(text, MEDICAL_INPUT_RULES)
+
+
 def _crisis_matches(text: str, *, honor_context: bool) -> list[str]:
     if honor_context and (NEGATED_CRISIS.search(text) or REPORTED_CRISIS.search(text)):
         return []
@@ -144,7 +156,8 @@ MEDICAL_DISCLAIMER = (
 
 CRISIS_FALLBACK = (
     "听到你这样说，我很担心你的安全。你现在有没有已经想好的具体做法，或者正在准备伤害自己？"
-    "请先不要一个人待着，马上联系身边可信任的人、人工支持或当地可用的紧急资源。"
+    "请先不要一个人待着，马上联系身边可信任的人，或拨打全国心理援助热线 12356；"
+    "情况紧急请直接拨打 120/110。"
 )
 MEDICAL_FALLBACK = (
     "我不能替医生做诊断，也不能给出用药、停药或治疗决定。请联系专业医生，"

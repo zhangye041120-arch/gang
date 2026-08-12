@@ -14,7 +14,9 @@ def test_openapi_locks_bearer_security_and_v1_schemas():
     request_schema = document["components"]["schemas"]["V1ChatRequest"]
     assert set(request_schema["required"]) == {"user_id", "session_id", "message"}
     assert request_schema["additionalProperties"] is False
-    assert set(request_schema["properties"]) == {"user_id", "session_id", "message", "context", "debug"}
+    assert set(request_schema["properties"]) == {
+        "user_id", "session_id", "message", "context", "conversation_history", "debug",
+    }
     response_schema = document["components"]["schemas"]["V1ChatResponse"]
     assert response_schema["additionalProperties"] is False
     assert set(response_schema["required"]) == {
@@ -28,6 +30,7 @@ def test_openapi_locks_bearer_security_and_v1_schemas():
     assert "V1DebugInfo" in document["components"]["schemas"]
     assert document["paths"]["/chat"]["post"]["deprecated"] is True
     assert "/v1/chat/stream" in document["paths"]
+    assert "/v1/speech" in document["paths"]
 
 
 def test_openapi_documents_stable_error_responses():

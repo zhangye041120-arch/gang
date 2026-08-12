@@ -30,19 +30,21 @@ from .guardrails import (
     FRAUD_FALLBACK,
     GENERIC_FALLBACK,
     MEDICAL_DISCLAIMER,
-    MEDICAL_FALLBACK,
     UNSAFE_FALLBACK,
     GuardrailResult,
+    medical_input_matches,
     precheck,
 )
+from .aging import apply_aging_filter
 from .live_context import LiveContext, fetch_live_context
 from .inspection_repository import MemoryLessonRepository
 from .knowledge import KnowledgeBase
 from .knowledge_repository import PostgresKnowledgeRepository
-from .embeddings import OpenAICompatibleEmbeddingClient
+from .embeddings import DashScopeRerankClient, OpenAICompatibleEmbeddingClient
 from .lesson_bridge import LessonBridge
 from .memory import MemoryCandidate, MemoryService
 from .memory_repository import MemoryMemoryRepository, PostgresMemoryRepository
+from .text_utils import chunk_by_graphemes
 from .notifications import CrisisNotifier
 from .quality import InspectionLog, MemoryQualityRepository, PostgresQualityRepository, QualityService
 from .prompts import inspector_messages, main_messages, rewrite_messages
@@ -59,6 +61,32 @@ from .schemas import (
 )
 
 JAVA_INTENTS = frozenset({"chat", "checkin", "game", "exercise", "assessment", "community"})
+
+
+def _requires_medical_disclaimer(user_text: str, reply: str) -> bool:
+    """Only append the medical disclaimer for explicit personal medical requests
+    or replies that actually contain diagnosis/dose/treatment decisions."""
+    return bool(medical_input_matches(user_text) or precheck("", reply).append_disclaimer)
+
+
+def _with_medical_disclaimer(reply: str) -> str:
+    if "我不能替医生做诊断" in reply:
+        return reply.rstrip()
+    return reply.rstrip() + MEDICAL_DISCLAIMER
+
+
+def _accessibility_note(prefs: dict[str, Any] | None) -> str:
+    if not prefs:
+        return ""
+    parts: list[str] = []
+    if prefs.get("large_text"):
+        parts.append("用户开启大字模式，回复请尽量短，一行不超过 20 个字")
+    if prefs.get("high_contrast"):
+        parts.append("用户开启高对比度模式，请不要依赖颜色表达")
+    if prefs.get("voice_enabled"):
+        parts.append("用户使用语音交互，请用短句和口语化表达，避免括号、符号和长串数字")
+    return "；".join(parts)
+
 
 _ACTION_MODULE_INTENTS = {
     "M1": "checkin",
@@ -204,6 +232,16 @@ _MODEL_INTENT_MODULES = {
     "community": "M5",
 }
 
+_FALLBACK_REPLIES = {
+    "AGENT_MODEL_TIMEOUT": "这次回复有点慢，没有及时接上话。你可以再和我说一次，我慢慢听。",
+    "AGENT_MODEL_NETWORK": "我这边网络有点不稳定，刚才没接上话。等一下我们再试一次好吗？",
+    "AGENT_MODEL_HTTP": "服务那边暂时没回应，刚才这句话我没能接住。过一会儿再和我说说，好吗？",
+    "AGENT_MODEL_RATE_LIMITED": "刚才问的人有点多，我没挤进去。稍等片刻再和我说一次，好吗？",
+    "AGENT_MODEL_INVALID_RESPONSE": "我刚才没有把话说明白。我们先慢一点，你可以再告诉我一次现在最困扰你的是什么。",
+    "AGENT_INVALID_JSON": "我刚才没有把话说明白。我们先慢一点，你可以再告诉我一次现在最困扰你的是什么。",
+    "AGENT_INSPECTION_FAILED": "我这边安全确认暂时没通过，先不急着回答。你可以再慢慢和我说一遍，好吗？",
+}
+
 _PERSONAL_FACT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (
         re.compile(
@@ -224,6 +262,18 @@ _PERSONAL_FACT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "profile",
         "用户年龄：",
     ),
+    (
+        re.compile(
+            r"我(?:今年|现在|已经)?(?:都)?\s*([一二三四五六七八九十百]+\s*多?)\s*(?:岁)?(?![的岁])"
+        ),
+        "profile",
+        "用户年龄：",
+    ),
+    (
+        re.compile(r"我(?:属|生肖是|属相是)\s*([鼠牛虎兔龙蛇马羊猴鸡狗猪])"),
+        "profile",
+        "用户生肖：",
+    ),
     (re.compile(r"我(?:的名字|名字)(?:叫|是)\s*([\u4e00-\u9fa5]{2,4})"), "profile", "用户姓名："),
     (re.compile(r"我叫\s*([\u4e00-\u9fa5]{2,4})(?![的岁])"), "profile", "用户姓名："),
     (re.compile(r"(?:大家可以|可以)叫我\s*([\u4e00-\u9fa5]{2,4})"), "profile", "用户姓名："),
@@ -241,6 +291,14 @@ _PERSONAL_FACT_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     ),
     (
         re.compile(r"我(?:叫[^，。]{1,8})?[，,]?退休前(?:是|做)([\u4e00-\u9fa5]{2,10})"),
+        "profile",
+        "用户职业：",
+    ),
+    (
+        re.compile(
+            r"我(?:是|就是|以前是|原来是)(?:个|位)?"
+            r"((?:教书的|老师|教师|医生|护士|工人|农民|干部|会计|工程师|技术员|售货员|营业员))"
+        ),
         "profile",
         "用户职业：",
     ),
@@ -285,6 +343,7 @@ _SINGLE_VALUE_MEMORY_KEYS = frozenset({
     "用户性别：",
     "用户籍贯：",
     "用户职业：",
+    "用户生肖：",
 })
 
 
@@ -443,6 +502,15 @@ class XiaoliaoAgent:
                 dimension=self.settings.embedding_dimension,
                 timeout=self.settings.timeout_seconds,
             )
+        self._main_fallback_client = None
+        if self.settings.model_fallback_enabled and self.settings.qwen_api_key:
+            self._main_fallback_client = OpenAICompatibleClient(
+                self.settings.qwen_base_url,
+                self.settings.qwen_api_key,
+                self.settings.qwen_model,
+                self.settings,
+                max_tokens=self.settings.max_tokens,
+            )
 
         if knowledge_base is not None:
             self.kb = knowledge_base
@@ -455,11 +523,25 @@ class XiaoliaoAgent:
                     vector = self._embed_client.embed([query])[0]
                     return vector_repository.vector_search(vector, top_k, version=self.settings.knowledge_version)
 
+            rerank = None
+            if self.settings.rerank_enabled and self.settings.qwen_api_key:
+                rerank_client = DashScopeRerankClient(
+                    self.settings.qwen_api_key,
+                    model=self.settings.rerank_model,
+                    base_url=self.settings.rerank_base_url,
+                    timeout=self.settings.rerank_timeout_seconds,
+                )
+
+                def rerank(query: str, documents: list[str]) -> list[float]:
+                    return rerank_client.rerank(query, documents)
+
             self.kb = KnowledgeBase.from_files(
                 self.settings.knowledge_path,
                 self.settings.lessons_path,
                 version=self.settings.knowledge_version,
                 vector_search=vector_search,
+                rerank=rerank,
+                rerank_candidates=self.settings.rerank_candidates,
             )
         if main_client is None or inspector_client is None:
             self.settings.validate_live()
@@ -474,6 +556,7 @@ class XiaoliaoAgent:
             enable_thinking=self.settings.inspector_enable_thinking,
         )
         self._inspector_escalation_client = inspector_escalation_client
+        self._live_provider_is_default = live_context_provider is None
         self.live_context_provider = live_context_provider or (
             lambda text: fetch_live_context(text, self.settings)
         )
@@ -485,10 +568,51 @@ class XiaoliaoAgent:
             self.crisis_repository = PostgresCrisisEventRepository(self.settings.knowledge_database_url)
         else:
             self.crisis_repository = MemoryCrisisEventRepository()
+        crisis_sender = None
+        recipients = [
+            item.strip()
+            for item in self.settings.crisis_notification_recipients.split(",")
+            if item.strip()
+        ]
+        if (
+            recipients
+            and self.settings.wecom_corp_id
+            and self.settings.wecom_agent_id
+            and self.settings.wecom_agent_secret
+        ):
+            from .wecom_outbound import WeComAppMessageSender
+
+            sender = WeComAppMessageSender(
+                self.settings.wecom_corp_id,
+                self.settings.wecom_agent_id,
+                self.settings.wecom_agent_secret,
+            )
+
+            def crisis_sender(event) -> None:
+                content = (
+                    f"【小辽危机预警】用户 {event.user_id} 会话 {event.session_id} "
+                    f"触发 {event.evidence_code}，请尽快确认用户安全。"
+                )
+                for recipient in recipients:
+                    sender.send_text(recipient, content)
+
         self.crisis_notifier = crisis_notifier or CrisisNotifier(
             route=self.settings.crisis_route,
+            sender=crisis_sender,
             max_attempts=self.settings.crisis_notification_attempts,
         )
+        self.tts_client = None
+        if self.settings.tts_enabled and self.settings.qwen_api_key:
+            from .speech import DashScopeTTSClient
+
+            self.tts_client = DashScopeTTSClient(
+                self.settings.qwen_api_key,
+                model=self.settings.tts_model,
+                voice=self.settings.tts_voice,
+                audio_format=self.settings.tts_format,
+                sample_rate=self.settings.tts_sample_rate,
+                base_url=self.settings.tts_base_url,
+            )
         if memory_service is not None:
             self.memory_service = memory_service
         elif self.settings.knowledge_database_url:
@@ -541,6 +665,7 @@ class XiaoliaoAgent:
         context: str,
         history: list[dict[str, str]],
         memory_context: str,
+        accessibility_note: str = "",
     ) -> MainResponse:
         messages = main_messages(
             user_text,
@@ -548,6 +673,7 @@ class XiaoliaoAgent:
             history,
             self.settings.prompt_version,
             memory_context,
+            accessibility_note,
         )
         raw = self.main_client.chat(messages, json_mode=True)
         try:
@@ -561,6 +687,35 @@ class XiaoliaoAgent:
                     history,
                     self.settings.prompt_version,
                     memory_context,
+                    accessibility_note,
+                ),
+                json_mode=True,
+            )
+            return parse_main(raw)
+
+    def _generate_with_fallback(
+        self,
+        user_text: str,
+        context: str,
+        history: list[dict[str, str]],
+        memory_context: str,
+        accessibility_note: str = "",
+    ) -> MainResponse:
+        try:
+            return self._generate(
+                user_text, context, history, memory_context, accessibility_note,
+            )
+        except ModelClientError:
+            if self._main_fallback_client is None:
+                raise
+            raw = self._main_fallback_client.chat(
+                main_messages(
+                    user_text,
+                    context,
+                    history,
+                    self.settings.prompt_version,
+                    memory_context,
+                    accessibility_note,
                 ),
                 json_mode=True,
             )
@@ -572,6 +727,7 @@ class XiaoliaoAgent:
         context: str,
         history: list[dict[str, str]],
         memory_context: str,
+        accessibility_note: str = "",
     ) -> Generator[str, None, MainResponse]:
         """Stream tokens from the main model.  The caller iterates over tokens,
         and the final ``.value`` attribute of the *StopIteration* holds the
@@ -579,12 +735,21 @@ class XiaoliaoAgent:
         with explicit return in the caller)."""
         if not hasattr(self.main_client, "chat_stream"):
             yield ""
-            return self._generate(user_text, context, history, memory_context)
+            return self._generate(
+                user_text, context, history, memory_context, accessibility_note,
+            )
 
         accumulated = ""
         try:
             for token in self.main_client.chat_stream(
-                main_messages(user_text, context, history, self.settings.prompt_version, memory_context),
+                main_messages(
+                    user_text,
+                    context,
+                    history,
+                    self.settings.prompt_version,
+                    memory_context,
+                    accessibility_note,
+                ),
                 json_mode=True,
             ):
                 if token.startswith("__XLM_USAGE__:"):
@@ -592,7 +757,22 @@ class XiaoliaoAgent:
                 accumulated += token
                 yield token
         except ModelClientError:
-            raise
+            if self._main_fallback_client is None or accumulated:
+                raise
+            yield ""
+            return parse_main(
+                self._main_fallback_client.chat(
+                    main_messages(
+                        user_text,
+                        context,
+                        history,
+                        self.settings.prompt_version,
+                        memory_context,
+                        accessibility_note,
+                    ),
+                    json_mode=True,
+                )
+            )
         # Try to parse whatever we accumulated
         main_resp = parse_main(accumulated)
         return main_resp
@@ -603,6 +783,8 @@ class XiaoliaoAgent:
         user_id: str,
         personalization: bool,
         memory_context: str,
+        *,
+        city: str = "",
     ) -> tuple[str, str, list[dict[str, object]]]:
         """Return (combined_context, effective_memory, sources).
 
@@ -620,7 +802,7 @@ class XiaoliaoAgent:
             if reminder_context:
                 combined_context = "\n\n".join(part for part in (reminder_context, combined_context) if part)
                 sources.append(reminder_source)
-            live = self.live_context_provider(user_text)
+            live = self._fetch_live(user_text, city)
             if live is not None and live.content:
                 combined_context = "\n\n".join(
                     part for part in (combined_context, f"[{live.section}]\n{live.content}") if part
@@ -636,7 +818,7 @@ class XiaoliaoAgent:
             fut_kb = executor.submit(self.kb.context, user_text, self.settings.top_k)
             fut_lesson = executor.submit(self.lesson_bridge.context, user_text)
             fut_mem = executor.submit(self.memory_service.get_context, user_id, query=user_text) if personalization else None
-            fut_live = executor.submit(self.live_context_provider, user_text)
+            fut_live = executor.submit(self._fetch_live, user_text, city)
 
             for fut in as_completed([f for f in (fut_kb, fut_lesson, fut_mem, fut_live) if f is not None]):
                 if fut is fut_kb:
@@ -669,6 +851,11 @@ class XiaoliaoAgent:
             combined_context = "\n\n".join(part for part in (reminder_context, combined_context) if part)
             sources.append(reminder_source)
         return combined_context, effective_memory, sources
+
+    def _fetch_live(self, text: str, city: str = "") -> Any:
+        if city and self._live_provider_is_default:
+            return fetch_live_context(text, replace(self.settings, live_default_city=city))
+        return self.live_context_provider(text)
 
     def _reminder_context(
         self,
@@ -772,12 +959,13 @@ class XiaoliaoAgent:
         rewritten: bool = False,
         inspection: InspectionResult | None = None,
     ) -> AgentResult:
+        reply = _FALLBACK_REPLIES.get(error_code, get_fallback_reply(self.settings.prompt_version))
         inspection = inspection or InspectionResult(
             issues=["Agent 未产生可安全发送的结构化回复"],
             error_pattern="invalid_response",
         )
         return AgentResult(
-            get_fallback_reply(self.settings.prompt_version),
+            reply,
             "chat",
             None,
             False,
@@ -825,7 +1013,22 @@ class XiaoliaoAgent:
                 json_mode=True,
             )
             inspection = parse_inspection(raw)
-        except (AgentInvalidInspectionError, ModelClientError):
+        except ModelClientError:
+            deterministic = precheck(user_text, candidate.reply)
+            if deterministic.risk_category != "normal":
+                return InspectionResult(
+                    crisis_detected=deterministic.crisis_detected,
+                    safety_violation=deterministic.safety_violation,
+                    issues=deterministic.rule_ids or [],
+                    suggestion="质检模型不可用，已按确定性安全规则拦截",
+                    error_pattern="crisis" if deterministic.crisis_detected else deterministic.risk_category,
+                )
+            return InspectionResult(
+                issues=["质检模型不可用，已按确定性规则放行"],
+                suggestion="按确定性安全规则放行",
+                error_pattern="none",
+            )
+        except AgentInvalidInspectionError:
             return InspectionResult(
                 safety_violation=True,
                 issues=["副 Agent 返回格式无法解析，按不安全处理"],
@@ -854,6 +1057,7 @@ class XiaoliaoAgent:
             not self.settings.inspector_escalate_on_issues
             or inspection.hard_blocked
             or (self._inspector_escalation_client is None and not isinstance(self.inspector_client, OpenAICompatibleClient))
+            or any("质检模型不可用" in issue for issue in inspection.issues)
         ):
             return False
         risk_hint = str(candidate.risk_hint or "").strip().lower()
@@ -874,14 +1078,14 @@ class XiaoliaoAgent:
         rewritten: bool = False,
         original_reply: str = "",
     ) -> AgentResult:
-        # When the model's reply touches medical territory, keep the model's
-        # answer and append a disclaimer instead of replacing it entirely.
+        # Only confirmed medical output keeps the model reply and appends a
+        # disclaimer; inspector/system failures use a generic fallback.
         if getattr(risk, 'append_disclaimer', False) and original_reply.strip():
-            reply = original_reply.rstrip() + MEDICAL_DISCLAIMER
+            reply = _with_medical_disclaimer(original_reply)
         else:
             replies = {
                 "crisis": CRISIS_FALLBACK,
-                "medical_boundary": MEDICAL_FALLBACK,
+                "medical_boundary": GENERIC_FALLBACK,
                 "unsafe_content": UNSAFE_FALLBACK,
             }
             reply = replies[risk.risk_category]
@@ -940,6 +1144,7 @@ class XiaoliaoAgent:
         personalization: bool = False,
         message_id: str = "",
         request_id: str = "",
+        context_prefs: dict[str, Any] | None = None,
     ) -> AgentResult:
         started = time.perf_counter()
         if hasattr(self.main_client, "last_usage"):
@@ -956,6 +1161,7 @@ class XiaoliaoAgent:
             user_id,
             session_id,
             personalization,
+            context_prefs,
         )
         result.stage_latencies["total_ms"] = max(0, int((time.perf_counter() - started) * 1000))
         result.request_id = request_id or result.request_id or uuid.uuid4().hex
@@ -1019,6 +1225,7 @@ class XiaoliaoAgent:
         user_id: str = "anonymous",
         session_id: str = "",
         personalization: bool = False,
+        context_prefs: dict[str, Any] | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """Safe buffered stream: reply tokens are emitted only after inspection.
 
@@ -1034,7 +1241,11 @@ class XiaoliaoAgent:
             self.inspector_client.last_usage = None
 
         history = history or []
+        prefs = context_prefs or {}
+        city = str(prefs.get("city", ""))
+        accessibility_note = _accessibility_note(prefs.get("accessibility") or {})
 
+        yield {"type": "status", "stage": "precheck"}
         # ── deterministic precheck ──────────────────────────────
         quick_input = precheck(user_text)
         if quick_input.risk_category != "normal":
@@ -1046,17 +1257,22 @@ class XiaoliaoAgent:
                    "safety_violation": result.safety_violation, "latency_ms": 0}
             return
 
+        yield {"type": "status", "stage": "rag"}
         # ── parallel RAG ────────────────────────────────────────
         combined_context, effective_memory, sources = self._fetch_rag(
             user_text, user_id, personalization, memory_context,
+            city=city,
         )
 
+        yield {"type": "status", "stage": "generating"}
         # ── stream main agent ────────────────────────────────────
         accumulated = ""
         main_error: str | None = None
         candidate: MainResponse | None = None
         try:
-            gen = self._generate_stream(user_text, combined_context, history, effective_memory)
+            gen = self._generate_stream(
+                user_text, combined_context, history, effective_memory, accessibility_note,
+            )
             while True:
                 try:
                     token = next(gen)
@@ -1082,10 +1298,13 @@ class XiaoliaoAgent:
         if candidate is None:
             candidate = parse_main(accumulated)
         candidate = apply_explicit_intent(user_text, candidate)
+        if self.settings.aging_wordlist_enforced:
+            candidate.reply = apply_aging_filter(candidate.reply)
+        yield {"type": "status", "stage": "inspecting"}
         quick = precheck(user_text, candidate.reply)
         if quick.risk_category != "normal":
             if getattr(quick, 'append_disclaimer', False):
-                final_reply = candidate.reply.rstrip() + MEDICAL_DISCLAIMER
+                final_reply = _with_medical_disclaimer(candidate.reply)
                 yield {"type": "token", "content": final_reply}
                 latency = int((time.perf_counter() - started) * 1000)
                 yield {"type": "done", "blocked": False, "crisis_detected": False,
@@ -1112,22 +1331,48 @@ class XiaoliaoAgent:
         final_reply = candidate.reply
 
         if inspection.hard_blocked:
-            risk = GuardrailResult(
-                "crisis" if inspection.crisis_detected else "medical_boundary",
-                ["I001" if inspection.crisis_detected else "I002"],
-                inspection.crisis_detected, inspection.safety_violation,
-                response_version="crisis-v1.0.0" if inspection.crisis_detected else "medical-v1.0.0",
-            )
-            result = self._guardrail_result(
-                risk, user_id=user_id, session_id=session_id, sources=sources,
-            )
-            yield {"type": "corrected", "reply": result.reply}
-            latency = int((time.perf_counter() - started) * 1000)
-            yield {"type": "done", "blocked": True,
-                   "crisis_detected": result.crisis_detected,
-                   "safety_violation": result.safety_violation,
-                   "rewritten": False, "latency_ms": latency}
-            return
+            if inspection.crisis_detected:
+                risk = GuardrailResult(
+                    "crisis", ["I001"], True, False,
+                    response_version="crisis-v1.0.0",
+                )
+                result = self._guardrail_result(
+                    risk, user_id=user_id, session_id=session_id, sources=sources,
+                )
+                yield {"type": "corrected", "reply": result.reply}
+                latency = int((time.perf_counter() - started) * 1000)
+                yield {"type": "done", "blocked": True,
+                       "crisis_detected": True, "safety_violation": False,
+                       "rewritten": False, "latency_ms": latency}
+                return
+            if inspection.error_pattern != "medical_boundary":
+                risk = GuardrailResult(
+                    "medical_boundary", ["I002"], False, True,
+                    response_version="medical-v1.0.0",
+                )
+                result = self._guardrail_result(
+                    risk, user_id=user_id, session_id=session_id, sources=sources,
+                )
+                yield {"type": "corrected", "reply": result.reply}
+                latency = int((time.perf_counter() - started) * 1000)
+                yield {"type": "done", "blocked": True,
+                       "crisis_detected": False, "safety_violation": True,
+                       "rewritten": False, "latency_ms": latency}
+                return
+            if not _requires_medical_disclaimer(user_text, candidate.reply):
+                inspection = replace(
+                    inspection,
+                    safety_violation=False,
+                    issues=[],
+                    error_pattern="none",
+                )
+            else:
+                final_reply = _with_medical_disclaimer(candidate.reply)
+                yield {"type": "token", "content": final_reply}
+                latency = int((time.perf_counter() - started) * 1000)
+                yield {"type": "done", "blocked": False, "crisis_detected": False,
+                       "safety_violation": False, "rewritten": False, "latency_ms": latency}
+                return
 
         if inspection.soft_failed:
             rewritten = True
@@ -1140,6 +1385,8 @@ class XiaoliaoAgent:
                     json_mode=True,
                 ))
                 candidate = apply_explicit_intent(user_text, candidate)
+                if self.settings.aging_wordlist_enforced:
+                    candidate.reply = apply_aging_filter(candidate.reply)
             except (AgentInvalidResponseError, ModelClientError):
                 fallback = self._fallback_result(
                     "AGENT_INSPECTION_FAILED", sources=sources, rewritten=True, inspection=inspection,
@@ -1152,7 +1399,7 @@ class XiaoliaoAgent:
             second_quick = precheck(user_text, candidate.reply)
             if second_quick.risk_category != "normal":
                 if getattr(second_quick, 'append_disclaimer', False):
-                    final_reply = candidate.reply.rstrip() + MEDICAL_DISCLAIMER
+                    final_reply = _with_medical_disclaimer(candidate.reply)
                     yield {"type": "corrected", "reply": final_reply}
                     latency = int((time.perf_counter() - started) * 1000)
                     yield {"type": "done", "blocked": False, "crisis_detected": False,
@@ -1175,22 +1422,47 @@ class XiaoliaoAgent:
                     user_text, candidate, thinking=True, context=combined_context,
                 )
             if inspection.hard_blocked:
-                risk = GuardrailResult(
-                    "crisis" if inspection.crisis_detected else "medical_boundary",
-                    ["I001" if inspection.crisis_detected else "I002"],
-                    inspection.crisis_detected, inspection.safety_violation,
-                )
-                result = self._guardrail_result(
-                    risk, user_id=user_id, session_id=session_id,
-                    sources=sources, rewritten=True,
-                )
-                yield {"type": "corrected", "reply": result.reply}
-                latency = int((time.perf_counter() - started) * 1000)
-                yield {"type": "done", "blocked": True,
-                       "crisis_detected": result.crisis_detected,
-                       "safety_violation": result.safety_violation,
-                       "rewritten": True, "latency_ms": latency}
-                return
+                if inspection.crisis_detected:
+                    risk = GuardrailResult("crisis", ["I001"], True, False)
+                    result = self._guardrail_result(
+                        risk, user_id=user_id, session_id=session_id,
+                        sources=sources, rewritten=True,
+                    )
+                    yield {"type": "corrected", "reply": result.reply}
+                    latency = int((time.perf_counter() - started) * 1000)
+                    yield {"type": "done", "blocked": True,
+                           "crisis_detected": True, "safety_violation": False,
+                           "rewritten": True, "latency_ms": latency}
+                    return
+                if inspection.error_pattern != "medical_boundary":
+                    risk = GuardrailResult(
+                        "medical_boundary", ["I002"], False, True,
+                        response_version="medical-v1.0.0",
+                    )
+                    result = self._guardrail_result(
+                        risk, user_id=user_id, session_id=session_id,
+                        sources=sources, rewritten=True,
+                    )
+                    yield {"type": "corrected", "reply": result.reply}
+                    latency = int((time.perf_counter() - started) * 1000)
+                    yield {"type": "done", "blocked": True,
+                           "crisis_detected": False, "safety_violation": True,
+                           "rewritten": True, "latency_ms": latency}
+                    return
+                if not _requires_medical_disclaimer(user_text, candidate.reply):
+                    inspection = replace(
+                        inspection,
+                        safety_violation=False,
+                        issues=[],
+                        error_pattern="none",
+                    )
+                else:
+                    final_reply = _with_medical_disclaimer(candidate.reply)
+                    yield {"type": "corrected", "reply": final_reply}
+                    latency = int((time.perf_counter() - started) * 1000)
+                    yield {"type": "done", "blocked": False, "crisis_detected": False,
+                           "safety_violation": False, "rewritten": True, "latency_ms": latency}
+                    return
             if inspection.soft_failed:
                 fallback = self._fallback_result(
                     "AGENT_INSPECTION_FAILED", sources=sources, rewritten=True, inspection=inspection,
@@ -1204,7 +1476,7 @@ class XiaoliaoAgent:
             # Stream the rewritten reply
             yield {"type": "corrected", "reply": final_reply}
 
-        chunks = [final_reply[i:i + 4] for i in range(0, len(final_reply), 4)] or [""]
+        chunks = chunk_by_graphemes(final_reply, 4) or [""]
         for chunk in chunks:
             yield {"type": "token", "content": chunk}
 
@@ -1258,8 +1530,12 @@ class XiaoliaoAgent:
         user_id: str = "anonymous",
         session_id: str = "",
         personalization: bool = False,
+        context_prefs: dict[str, Any] | None = None,
     ) -> AgentResult:
         history = history or []
+        prefs = context_prefs or {}
+        city = str(prefs.get("city", ""))
+        accessibility_note = _accessibility_note(prefs.get("accessibility") or {})
         stages: dict[str, int] = {}
         start = time.perf_counter()
         quick_input = precheck(user_text)
@@ -1273,12 +1549,15 @@ class XiaoliaoAgent:
         start = time.perf_counter()
         combined_context, effective_memory, sources = self._fetch_rag(
             user_text, user_id, personalization, memory_context,
+            city=city,
         )
         stages["rag_ms"] = max(0, int((time.perf_counter() - start) * 1000))
 
         start = time.perf_counter()
         try:
-            candidate = self._generate(user_text, combined_context, history, effective_memory)
+            candidate = self._generate_with_fallback(
+                user_text, combined_context, history, effective_memory, accessibility_note,
+            )
         except AgentInvalidResponseError:
             stages["main_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             return self._with_stages(
@@ -1297,6 +1576,8 @@ class XiaoliaoAgent:
             )
         stages["main_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         candidate = apply_explicit_intent(user_text, candidate)
+        if self.settings.aging_wordlist_enforced:
+            candidate.reply = apply_aging_filter(candidate.reply)
 
         start = time.perf_counter()
         quick = precheck(user_text, candidate.reply)
@@ -1320,17 +1601,43 @@ class XiaoliaoAgent:
             )
             stages["escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if inspection.hard_blocked:
-            risk = GuardrailResult(
-                "crisis" if inspection.crisis_detected else "medical_boundary",
-                ["I001" if inspection.crisis_detected else "I002"],
-                inspection.crisis_detected,
-                inspection.safety_violation,
-                response_version="crisis-v1.0.0" if inspection.crisis_detected else "medical-v1.0.0",
-            )
-            return self._with_stages(
-                self._guardrail_result(risk, user_id=user_id, session_id=session_id, sources=sources),
-                stages,
-            )
+            if inspection.crisis_detected:
+                risk = GuardrailResult("crisis", ["I001"], True, False, response_version="crisis-v1.0.0")
+                return self._with_stages(
+                    self._guardrail_result(risk, user_id=user_id, session_id=session_id, sources=sources),
+                    stages,
+                )
+            if inspection.error_pattern != "medical_boundary":
+                risk = GuardrailResult(
+                    "medical_boundary", ["I002"], False, True,
+                    response_version="medical-v1.0.0",
+                )
+                return self._with_stages(
+                    self._guardrail_result(
+                        risk, user_id=user_id, session_id=session_id,
+                        sources=sources,
+                    ),
+                    stages,
+                )
+            if not _requires_medical_disclaimer(user_text, candidate.reply):
+                inspection = replace(
+                    inspection,
+                    safety_violation=False,
+                    issues=[],
+                    error_pattern="none",
+                )
+            else:
+                risk = GuardrailResult(
+                    "medical_boundary", ["I002"], False, True,
+                    response_version="medical-v1.0.0", append_disclaimer=True,
+                )
+                return self._with_stages(
+                    self._guardrail_result(
+                        risk, user_id=user_id, session_id=session_id,
+                        sources=sources, original_reply=candidate.reply,
+                    ),
+                    stages,
+                )
 
         rewritten = False
         if inspection.soft_failed:
@@ -1348,6 +1655,8 @@ class XiaoliaoAgent:
                     json_mode=True,
                 ))
                 candidate = apply_explicit_intent(user_text, candidate)
+                if self.settings.aging_wordlist_enforced:
+                    candidate.reply = apply_aging_filter(candidate.reply)
             except AgentInvalidResponseError:
                 stages["rewrite_ms"] = max(0, int((time.perf_counter() - start) * 1000))
                 return self._with_stages(
@@ -1398,23 +1707,50 @@ class XiaoliaoAgent:
                 )
                 stages["second_escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if inspection.hard_blocked:
-                risk = GuardrailResult(
-                    "crisis" if inspection.crisis_detected else "medical_boundary",
-                    ["I001" if inspection.crisis_detected else "I002"],
-                    inspection.crisis_detected,
-                    inspection.safety_violation,
-                    response_version="crisis-v1.0.0" if inspection.crisis_detected else "medical-v1.0.0",
-                )
-                return self._with_stages(
-                    self._guardrail_result(
-                        risk,
-                        user_id=user_id,
-                        session_id=session_id,
-                        sources=sources,
-                        rewritten=True,
-                    ),
-                    stages,
-                )
+                if inspection.crisis_detected:
+                    risk = GuardrailResult(
+                        "crisis", ["I001"], True, False,
+                        response_version="crisis-v1.0.0",
+                    )
+                    return self._with_stages(
+                        self._guardrail_result(
+                            risk, user_id=user_id, session_id=session_id,
+                            sources=sources, rewritten=True,
+                        ),
+                        stages,
+                    )
+                if inspection.error_pattern != "medical_boundary":
+                    risk = GuardrailResult(
+                        "medical_boundary", ["I002"], False, True,
+                        response_version="medical-v1.0.0",
+                    )
+                    return self._with_stages(
+                        self._guardrail_result(
+                            risk, user_id=user_id, session_id=session_id,
+                            sources=sources, rewritten=True,
+                        ),
+                        stages,
+                    )
+                if not _requires_medical_disclaimer(user_text, candidate.reply):
+                    inspection = replace(
+                        inspection,
+                        safety_violation=False,
+                        issues=[],
+                        error_pattern="none",
+                    )
+                else:
+                    risk = GuardrailResult(
+                        "medical_boundary", ["I002"], False, True,
+                        response_version="medical-v1.0.0", append_disclaimer=True,
+                    )
+                    return self._with_stages(
+                        self._guardrail_result(
+                            risk, user_id=user_id, session_id=session_id,
+                            sources=sources, rewritten=True,
+                            original_reply=candidate.reply,
+                        ),
+                        stages,
+                    )
             if inspection.soft_failed:
                 return self._with_stages(
                     self._fallback_result(

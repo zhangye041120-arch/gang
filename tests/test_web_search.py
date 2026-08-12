@@ -79,6 +79,8 @@ def test_dashscope_web_search_uses_qwen_key_and_parses_answer():
         assert body["enable_search"] is True
         assert body["search_options"]["forced_search"] is False
         assert body["model"] == "qwen3.7-flash-2026-07-15"
+        # freshness=7 maps to valid DashScope value 7
+        assert body["search_options"]["freshness"] == 7
         return httpx.Response(200, json={
             "choices": [{"message": {"content": "沈阳今天多云，气温26度。"}}],
         })
@@ -89,10 +91,39 @@ def test_dashscope_web_search_uses_qwen_key_and_parses_answer():
         qwen_api_key="dash-key",
         qwen_base_url="https://dashscope.invalid/v1",
     )
-    results = search_web("沈阳天气", settings, client=client)
+    results = search_web("沈阳天气", settings, client=client, freshness=7)
     client.close()
     assert results[0]["title"].startswith("百炼联网检索")
     assert "沈阳今天多云" in results[0]["snippet"]
+
+
+def test_dashscope_defaults_to_30_day_freshness():
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["search_options"]["freshness"] == 30
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "通用科普内容。"}}],
+        })
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    settings = Settings(
+        web_search_provider="dashscope",
+        qwen_api_key="dash-key",
+        qwen_base_url="https://dashscope.invalid/v1",
+    )
+    search_web("药品科普", settings, client=client)  # no freshness → default 30
+    client.close()
+
+
+def test_freshness_clamps_to_valid_dashscope_values():
+    from xiaoliao_agent.web_search import _clamp_freshness
+    assert _clamp_freshness(1) == 7   # nearest to 7
+    assert _clamp_freshness(7) == 7
+    assert _clamp_freshness(15) == 7  # |15-7|=8 < |15-30|=15
+    assert _clamp_freshness(20) == 30  # |20-30|=10 < |20-7|=13
+    assert _clamp_freshness(30) == 30
+    assert _clamp_freshness(150) == 180  # |150-180|=30 < |150-30|=120
+    assert _clamp_freshness(365) == 365
 
 
 def test_dashscope_without_qwen_key_is_unconfigured():

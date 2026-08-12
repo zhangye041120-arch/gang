@@ -4,8 +4,11 @@ import re
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .text_utils import grapheme_safe_end
+
 
 VectorSearch = Callable[[str, int], list[tuple[str, float]]]
+Rerank = Callable[[str, list[str]], list[float]]
 
 
 @dataclass(frozen=True)
@@ -87,7 +90,9 @@ def split_markdown(
         heading = heading_path[-1] if heading_path else "知识库"
         start = 0
         while start < len(raw):
-            end = min(len(raw), start + max_chars)
+            end = grapheme_safe_end(raw, min(len(raw), start + max_chars))
+            if end <= start:
+                end = min(len(raw), start + max_chars)
             piece = raw[start:end].strip()
             if piece:
                 chunks.append(Chunk(
@@ -116,9 +121,17 @@ def _normalise_scores(scores: dict[str, float]) -> dict[str, float]:
 
 
 class KnowledgeBase:
-    def __init__(self, chunks: list[Chunk], vector_search: VectorSearch | None = None):
+    def __init__(
+        self,
+        chunks: list[Chunk],
+        vector_search: VectorSearch | None = None,
+        rerank: Rerank | None = None,
+        rerank_candidates: int = 12,
+    ):
         self.chunks = chunks
         self.vector_search = vector_search
+        self.rerank = rerank
+        self.rerank_candidates = rerank_candidates
         self.last_search_error: dict[str, str] | None = None
         self._token_cache = {
             chunk.chunk_id: _tokens(chunk.heading + "\n" + chunk.content)
@@ -131,6 +144,8 @@ class KnowledgeBase:
         *paths: Path,
         version: str = "v1",
         vector_search: VectorSearch | None = None,
+        rerank: Rerank | None = None,
+        rerank_candidates: int = 12,
     ) -> "KnowledgeBase":
         chunks: list[Chunk] = []
         for path in paths:
@@ -142,7 +157,12 @@ class KnowledgeBase:
                 source=source,
                 version=version,
             ))
-        return cls(chunks, vector_search=vector_search)
+        return cls(
+            chunks,
+            vector_search=vector_search,
+            rerank=rerank,
+            rerank_candidates=rerank_candidates,
+        )
 
     def _lexical_scores(self, query: str, allowed_sources: set[str] | None, version: str | None) -> dict[str, float]:
         query_tokens = _tokens(query)
@@ -191,9 +211,43 @@ class KnowledgeBase:
         vector_norm = _normalise_scores(vector_scores)
         ids = set(lexical_norm) | set(vector_norm)
         chunks_by_id = {chunk.chunk_id: chunk for chunk in self.chunks}
+        if not ids:
+            return []
+
+        rerank_norm: dict[str, float] = {}
+        if self.rerank is not None:
+            preliminary = sorted(
+                (
+                    (0.6 * lexical_norm.get(chunk_id, 0.0) + 0.4 * vector_norm.get(chunk_id, 0.0), chunk_id)
+                    for chunk_id in ids
+                ),
+                key=lambda item: (-item[0], item[1]),
+            )
+            candidates = [chunk_id for _, chunk_id in preliminary[: max(1, self.rerank_candidates)]]
+            try:
+                scores = self.rerank(query, [chunks_by_id[chunk_id].content for chunk_id in candidates])
+                rerank_scores: dict[str, float] = {}
+                for chunk_id, score in zip(candidates, scores):
+                    if score is not None:
+                        rerank_scores[chunk_id] = float(score)
+                rerank_norm = _normalise_scores(rerank_scores)
+            except Exception:
+                if self.last_search_error is None:
+                    self.last_search_error = {
+                        "type": "rerank_unavailable",
+                        "message": "重排不可用，已回退到词法+向量融合检索",
+                    }
+
         ranked = []
         for chunk_id in ids:
-            score = 0.6 * lexical_norm.get(chunk_id, 0.0) + 0.4 * vector_norm.get(chunk_id, 0.0)
+            if rerank_norm:
+                score = (
+                    0.2 * lexical_norm.get(chunk_id, 0.0)
+                    + 0.2 * vector_norm.get(chunk_id, 0.0)
+                    + 0.6 * rerank_norm.get(chunk_id, 0.0)
+                )
+            else:
+                score = 0.6 * lexical_norm.get(chunk_id, 0.0) + 0.4 * vector_norm.get(chunk_id, 0.0)
             ranked.append((score, chunks_by_id[chunk_id]))
         ranked.sort(key=lambda item: (-item[0], item[1].chunk_id))
         return [(chunk, round(score, 4)) for score, chunk in ranked[:top_k]]

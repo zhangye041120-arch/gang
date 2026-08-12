@@ -2,6 +2,7 @@
 import pytest
 
 from xiaoliao_agent.agent import XiaoliaoAgent
+from xiaoliao_agent.client import ModelNetworkError
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.live_context import LiveContext
 from xiaoliao_agent.reminders import ReminderService
@@ -253,8 +254,9 @@ def test_inspector_escalation_blocks_when_thinking_pass_finds_safety_issue():
     )
     result = agent.chat("我最近有点累")
     assert thinking.calls == 1
-    assert result.blocked
-    assert result.safety_violation
+    assert not result.blocked
+    assert not result.safety_violation
+    assert "我不能替医生做诊断" not in result.reply
 
 
 def test_clean_fast_pass_does_not_create_escalation_client():
@@ -290,7 +292,13 @@ def test_chat_stream_escalates_when_fast_inspector_is_uncertain():
     events = list(agent.chat_stream("我最近有点累"))
     done = [event for event in events if event.get("type") == "done"][0]
     assert thinking.calls == 1
-    assert done["blocked"] is True
+    # Ordinary emotion is not a medical boundary, even if Inspector over-flags it.
+    assert done["blocked"] is False
+    assert not any(
+        "我不能替医生做诊断" in str(event.get("content", ""))
+        for event in events
+        if event.get("type") in {"token", "corrected"}
+    )
 
 
 def test_fetch_rag_includes_live_clock_context_and_sources():
@@ -398,3 +406,50 @@ def test_chat_stream_emits_safe_final_reply_after_inspection():
     assert done[0]["blocked"] is False
     assert all(len(event.get("content", "")) <= 4 for event in tokens)
     assert "".join(event.get("content", "") for event in tokens) == "听起来你最近有些累。愿不愿意先记一下今天的心情？"
+
+
+def test_agent_wires_rerank_into_knowledge_base():
+    settings = Settings(qwen_api_key="test-key", rerank_enabled=True)
+    agent = XiaoliaoAgent(
+        settings,
+        main_client=FakeMainClient(),
+        inspector_client=FakeInspectorClient(),
+    )
+    assert agent.kb.rerank is not None
+    assert agent.kb.rerank_candidates == settings.rerank_candidates
+
+
+class FailingMainClient:
+    def chat(self, messages, *, json_mode=False):
+        raise ModelNetworkError("main unavailable", request_id="req-main-down")
+
+
+class FakeFallbackMainClient:
+    def chat(self, messages, *, json_mode=False):
+        return json.dumps({
+            "reply": "备用模型接上了话。",
+            "intent": "chat",
+            "action": None,
+            "risk_hint": "none",
+        }, ensure_ascii=False)
+
+
+def test_main_model_falls_back_to_secondary_provider():
+    agent = XiaoliaoAgent(
+        Settings(qwen_api_key="test-key"),
+        main_client=FailingMainClient(),
+        inspector_client=FakeInspectorClient(),
+    )
+    agent._main_fallback_client = FakeFallbackMainClient()
+    result = agent.chat("我最近有点累")
+    assert result.reply == "备用模型接上了话。"
+    assert not result.error_code
+
+
+def test_chat_stream_emits_progress_status_events():
+    events = list(make_agent().chat_stream("我最近有点累"))
+    stages = [event["stage"] for event in events if event.get("type") == "status"]
+    assert "precheck" in stages
+    assert "rag" in stages
+    assert "generating" in stages
+    assert "inspecting" in stages

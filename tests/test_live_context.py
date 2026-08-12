@@ -3,7 +3,13 @@ import re
 import httpx
 
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.live_context import extract_city, fetch_live_context, should_lookup
+from xiaoliao_agent.live_context import (
+    _resolve_day_offset,
+    _target_date_string,
+    extract_city,
+    fetch_live_context,
+    should_lookup,
+)
 
 
 def test_live_fact_questions_route_to_lookup():
@@ -68,8 +74,56 @@ def test_weather_question_routes_to_web_search():
 
 def test_web_search_unconfigured_returns_none_without_crash():
     result = fetch_live_context("今天天气怎么样", Settings(web_search_api_key=""), client=None)
-    assert result is None
+    assert result is not None
+    assert result.label == "live:web-unavailable"
+    assert "联网检索暂时不可用" in result.content
 
 
 def test_non_live_message_returns_none():
     assert fetch_live_context("我最近心情不太好", Settings(web_search_api_key="k"), client=None) is None
+
+
+def test_day_offset_resolves_today_tomorrow_day_after():
+    assert _resolve_day_offset("今天天气怎么样") == 0
+    assert _resolve_day_offset("明天多少度") == 1
+    assert _resolve_day_offset("后天冷不冷") == 2
+    assert _resolve_day_offset("大后天热不热") == 3
+    assert _resolve_day_offset("昨天好冷") == -1
+    assert _resolve_day_offset("前天下了雨") == -2
+    assert _resolve_day_offset("最近天气不错") == 0
+
+
+def test_target_date_string_includes_year_month_day():
+    result = _target_date_string(0)
+    assert "年" in result
+    assert "月" in result
+    assert "日" in result
+    # tomorrow should be different from today
+    today = _target_date_string(0)
+    tomorrow = _target_date_string(1)
+    assert today != tomorrow
+
+
+def test_weather_query_includes_target_date():
+    def handler(request):
+        return httpx.Response(200, json={
+            "organic": [{
+                "title": "天气",
+                "link": "https://example.invalid",
+                "snippet": "多云 26 度",
+            }],
+        })
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    settings = Settings(
+        web_search_provider="serper",
+        web_search_api_key="test-key",
+        live_default_city="沈阳",
+    )
+    # "明天" should produce a query with tomorrow's date, not "今天"
+    result = fetch_live_context("明天多少度", settings, client=client)
+    client.close()
+    assert result is not None
+    # The search context should contain the target date, not "今天天气"
+    assert "今天天气" not in result.content  # shouldn't hardcode 今天
+    assert "天气" in result.content

@@ -5,7 +5,11 @@ import pytest
 from xiaoliao_agent.agent import AgentInvalidInspectionError, XiaoliaoAgent, parse_inspection
 from xiaoliao_agent.client import ModelTimeoutError
 from xiaoliao_agent.config import Settings
-from xiaoliao_agent.guardrails import CRISIS_FALLBACK, GENERIC_FALLBACK, SAFETY_FALLBACK
+from xiaoliao_agent.guardrails import (
+    CRISIS_FALLBACK,
+    GENERIC_FALLBACK,
+    MEDICAL_DISCLAIMER,
+)
 from xiaoliao_agent.inspection_repository import MemoryLessonRepository
 
 
@@ -84,7 +88,6 @@ def test_unknown_error_pattern_is_normalized():
 
 @pytest.mark.parametrize(("inspection", "expected_reply", "crisis", "safety"), [
     (inspection_payload(crisis_detected=True, error_pattern="crisis"), CRISIS_FALLBACK, True, False),
-    (inspection_payload(safety_violation=True, error_pattern="medical_boundary"), SAFETY_FALLBACK, False, True),
 ])
 def test_hard_inspection_failure_never_sends_candidate(inspection, expected_reply, crisis, safety):
     agent, main, _ = make_agent([main_payload("未经审核候选")], [inspection])
@@ -94,6 +97,35 @@ def test_hard_inspection_failure_never_sends_candidate(inspection, expected_repl
     assert result.crisis_detected is crisis
     assert result.safety_violation is safety
     assert main.calls == 1
+
+
+def test_medical_hard_block_ignored_for_ordinary_emotion():
+    inspection = inspection_payload(safety_violation=True, error_pattern="medical_boundary")
+    agent, main, _ = make_agent([main_payload("未经审核候选")], [inspection])
+    result = agent.chat("我最近有点累")
+    assert result.reply == "未经审核候选"
+    assert not result.blocked
+    assert not result.safety_violation
+    assert MEDICAL_DISCLAIMER.strip() not in result.reply
+
+
+def test_medical_hard_block_applies_for_explicit_medical_request():
+    inspection = inspection_payload(safety_violation=True, error_pattern="medical_boundary")
+    agent, main, _ = make_agent([main_payload("未经审核候选")], [inspection])
+    result = agent.chat("我该不该停药")
+    assert result.reply.startswith("未经审核候选")
+    assert MEDICAL_DISCLAIMER.strip() in result.reply
+    assert result.blocked
+    assert result.safety_violation
+
+
+def test_medical_disclaimer_is_not_duplicated_when_reply_already_has_it():
+    inspection = inspection_payload(safety_violation=True, error_pattern="medical_boundary")
+    candidate = "我不能替医生做诊断，请联系专业医生。"
+    agent, main, _ = make_agent([main_payload(candidate)], [inspection])
+    result = agent.chat("我该不该停药")
+    assert result.reply == candidate
+    assert result.reply.count("我不能替医生做诊断") == 1
 
 
 def test_soft_failure_rewrites_once_and_reinspects():
@@ -116,7 +148,7 @@ def test_second_soft_failure_uses_conservative_fallback_without_third_rewrite():
         [soft, soft],
     )
     result = agent.chat("我最近有点累")
-    assert result.reply == GENERIC_FALLBACK
+    assert result.reply == "我这边安全确认暂时没通过，先不急着回答。你可以再慢慢和我说一遍，好吗？"
     assert result.reply != "仍未通过的重写"
     assert result.error_code == "AGENT_INSPECTION_FAILED"
     assert main.calls == 2
@@ -126,14 +158,25 @@ def test_second_soft_failure_uses_conservative_fallback_without_third_rewrite():
 @pytest.mark.parametrize("bad_inspection", [
     "not-json",
     inspection_payload(crisis_detected="false"),
-    ModelTimeoutError("timeout", request_id="req-inspector-timeout"),
 ])
 def test_invalid_or_failed_inspector_is_treated_as_unsafe(bad_inspection):
     agent, main, _ = make_agent([main_payload("未经审核候选")], [bad_inspection])
     result = agent.chat("我最近有点累")
-    assert result.reply == SAFETY_FALLBACK
+    assert result.reply == GENERIC_FALLBACK
     assert result.safety_violation
     assert result.reply != "未经审核候选"
+    assert main.calls == 1
+
+
+def test_inspector_outage_falls_back_to_deterministic_rules():
+    agent, main, _ = make_agent(
+        [main_payload("未经审核候选")],
+        [ModelTimeoutError("timeout", request_id="req-inspector-timeout")],
+    )
+    result = agent.chat("我最近有点累")
+    assert result.reply == "未经审核候选"
+    assert not result.safety_violation
+    assert any("质检模型不可用" in issue for issue in result.inspection.issues)
     assert main.calls == 1
 
 

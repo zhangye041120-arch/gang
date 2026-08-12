@@ -304,6 +304,97 @@
         ]
       }
     },
+    "/v1/speech": {
+      "post": {
+        "summary": "V1 Speech",
+        "operationId": "v1_speech_v1_speech_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/v1/users/consent": {
       "post": {
         "summary": "Set User Consent",
@@ -849,6 +940,44 @@
         ],
         "title": "DeleteUserRequest"
       },
+      "SpeechRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "SpeechRequest"
+      },
+      "V1Accessibility": {
+        "properties": {
+          "large_text": {
+            "type": "boolean",
+            "title": "Large Text",
+            "default": false
+          },
+          "high_contrast": {
+            "type": "boolean",
+            "title": "High Contrast",
+            "default": false
+          },
+          "voice_enabled": {
+            "type": "boolean",
+            "title": "Voice Enabled",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "V1Accessibility"
+      },
       "V1ChatRequest": {
         "properties": {
           "user_id": {
@@ -873,6 +1002,14 @@
           },
           "context": {
             "$ref": "#/components/schemas/V1Context"
+          },
+          "conversation_history": {
+            "items": {
+              "$ref": "#/components/schemas/V1ConversationMessage"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Conversation History"
           },
           "debug": {
             "type": "boolean",
@@ -986,11 +1123,45 @@
             "maxLength": 2000,
             "title": "User Summary",
             "default": ""
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "City",
+            "default": ""
+          },
+          "accessibility": {
+            "$ref": "#/components/schemas/V1Accessibility"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "V1Context"
+      },
+      "V1ConversationMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "V1ConversationMessage"
       },
       "V1DebugInfo": {
         "properties": {

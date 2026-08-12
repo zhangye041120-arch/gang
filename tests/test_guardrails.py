@@ -1,11 +1,31 @@
 import pytest
 
+from xiaoliao_agent.aging import apply_aging_filter
 from xiaoliao_agent.guardrails import precheck, MEDICAL_DISCLAIMER
 
 
 def test_crisis_is_detected():
     result = precheck("我不想活了")
     assert result.crisis_detected
+
+
+def test_aging_filter_replaces_banned_phrases():
+    reply = apply_aging_filter("你别多想，想开点，这很简单。")
+    assert "想开点" not in reply
+    assert "别多想" not in reply
+    assert "这很简单" not in reply
+
+
+@pytest.mark.parametrize("text", [
+    "我活着就是拖累孩子",
+    "我一觉睡过去别醒就好了",
+    "没有我，他们过得更好",
+    "我活够了",
+])
+def test_implicit_elder_crisis_phrases_are_detected(text):
+    result = precheck(text)
+    assert result.crisis_detected
+    assert result.rule_ids
 
 
 def test_medical_reply_appends_disclaimer_not_block():

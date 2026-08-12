@@ -43,7 +43,7 @@ class Settings:
     qwen_api_key: str = ""
     qwen_model: str = "qwen3.7-flash-2026-07-15"
     temperature: float = 0.3
-    max_tokens: int = 400
+    max_tokens: int = 800
     inspector_max_tokens: int = 256
     inspector_enable_thinking: bool = False
     inspector_escalate_on_issues: bool = True
@@ -57,6 +57,7 @@ class Settings:
     web_search_forced_search: bool = False
     web_search_timeout_seconds: float = 45.0
     web_search_max_results: int = 5
+    model_fallback_enabled: bool = True
     reminders_enabled: bool = True
     timeout_seconds: float = 60.0
     stream_timeout_seconds: float = 60.0
@@ -67,8 +68,13 @@ class Settings:
     embedding_model: str = ""
     embedding_dimension: int = 1536
     knowledge_database_url: str = ""
+    rerank_enabled: bool = False
+    rerank_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
+    rerank_model: str = "qwen3-rerank"
+    rerank_candidates: int = 12
+    rerank_timeout_seconds: float = 30.0
     prompt_version: str = "1.7.0"
-    action_decline_cooldown_hours: int = 2
+    action_decline_cooldown_hours: int = 24
     quality_hash_salt: str = "xiaoliao-local-quality"
     api_token: str = ""
     api_debug_token: str = ""
@@ -80,6 +86,7 @@ class Settings:
     crisis_retention_days: int = 365
     crisis_notification_attempts: int = 2
     crisis_referral_config_path: str = ""
+    crisis_notification_recipients: str = ""
     wecom_corp_id: str = ""
     wecom_agent_id: str = ""
     wecom_agent_secret: str = ""
@@ -101,13 +108,20 @@ class Settings:
     wecom_checkin_group_state_path: str = ""
     wecom_checkin_group_user_schedule_path: str = ""
     memory_confidence_threshold: float = 0.8
-    memory_max_items: int = 6
-    memory_max_chars: int = 2000
+    memory_max_items: int = 20
+    memory_max_chars: int = 8000
     knowledge_path: Path = PROJECT_ROOT / "knowledge" / "CBT知识库_Agent版.md"
     lessons_path: Path = PROJECT_ROOT / "knowledge" / "lessons.md"
     lesson_search_top_k: int = 2
     memory_vector_search_enabled: bool = True
     memory_vector_min_score: float = 0.55
+    aging_wordlist_enforced: bool = True
+    tts_enabled: bool = False
+    tts_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
+    tts_model: str = "qwen-audio-3.0-tts-flash"
+    tts_voice: str = "longanhuan_v3.6"
+    tts_format: str = "wav"
+    tts_sample_rate: int = 24000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -120,7 +134,7 @@ class Settings:
             qwen_api_key=os.getenv("QWEN_API_KEY", ""),
             qwen_model=os.getenv("QWEN_MODEL", cls.qwen_model),
             temperature=float(os.getenv("AGENT_TEMPERATURE", "0.3")),
-            max_tokens=int(os.getenv("AGENT_MAX_TOKENS", "400")),
+            max_tokens=int(os.getenv("AGENT_MAX_TOKENS", "800")),
             inspector_max_tokens=int(os.getenv("INSPECTOR_MAX_TOKENS", "256")),
             inspector_enable_thinking=os.getenv("INSPECTOR_ENABLE_THINKING", "false").strip().lower() == "true",
             inspector_escalate_on_issues=os.getenv("INSPECTOR_ESCALATE_ON_ISSUES", "true").strip().lower() == "true",
@@ -134,6 +148,7 @@ class Settings:
             web_search_forced_search=os.getenv("WEB_SEARCH_FORCED_SEARCH", "false").strip().lower() == "true",
             web_search_timeout_seconds=float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "45")),
             web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
+            model_fallback_enabled=os.getenv("MODEL_FALLBACK_ENABLED", "true").strip().lower() == "true",
             reminders_enabled=os.getenv("REMINDERS_ENABLED", "true").strip().lower() == "true",
             timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "60")),
             stream_timeout_seconds=float(os.getenv("AGENT_STREAM_TIMEOUT_SECONDS", "60")),
@@ -144,8 +159,13 @@ class Settings:
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1536")),
             knowledge_database_url=os.getenv("KNOWLEDGE_DATABASE_URL", ""),
+            rerank_enabled=os.getenv("RERANK_ENABLED", "false").strip().lower() == "true",
+            rerank_base_url=os.getenv("RERANK_BASE_URL", cls.rerank_base_url),
+            rerank_model=os.getenv("RERANK_MODEL", cls.rerank_model),
+            rerank_candidates=int(os.getenv("RERANK_CANDIDATES", "12")),
+            rerank_timeout_seconds=float(os.getenv("RERANK_TIMEOUT_SECONDS", "30")),
             prompt_version=os.getenv("PROMPT_VERSION", "1.7.0"),
-            action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "2")),
+            action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "24")),
             quality_hash_salt=os.getenv("QUALITY_HASH_SALT", "xiaoliao-local-quality"),
             api_token=os.getenv("API_TOKEN", ""),
             api_debug_token=os.getenv("API_DEBUG_TOKEN", ""),
@@ -157,6 +177,7 @@ class Settings:
             crisis_retention_days=int(os.getenv("CRISIS_RETENTION_DAYS", "365")),
             crisis_notification_attempts=int(os.getenv("CRISIS_NOTIFICATION_ATTEMPTS", "2")),
             crisis_referral_config_path=os.getenv("CRISIS_REFERRAL_CONFIG_PATH", ""),
+            crisis_notification_recipients=os.getenv("CRISIS_NOTIFICATION_RECIPIENTS", ""),
             wecom_corp_id=os.getenv("WECOM_CORP_ID", ""),
             wecom_agent_id=os.getenv("WECOM_AGENT_ID", ""),
             wecom_agent_secret=os.getenv("WECOM_AGENT_SECRET", ""),
@@ -178,11 +199,18 @@ class Settings:
             wecom_checkin_group_state_path=os.getenv("WECOM_CHECKIN_GROUP_STATE_PATH", ""),
             wecom_checkin_group_user_schedule_path=os.getenv("WECOM_CHECKIN_GROUP_USER_SCHEDULE_PATH", ""),
             memory_confidence_threshold=float(os.getenv("MEMORY_CONFIDENCE_THRESHOLD", "0.8")),
-            memory_max_items=int(os.getenv("MEMORY_MAX_ITEMS", "6")),
-            memory_max_chars=int(os.getenv("MEMORY_MAX_CHARS", "2000")),
+            memory_max_items=int(os.getenv("MEMORY_MAX_ITEMS", "20")),
+            memory_max_chars=int(os.getenv("MEMORY_MAX_CHARS", "8000")),
             memory_vector_search_enabled=os.getenv("MEMORY_VECTOR_SEARCH_ENABLED", "true").strip().lower() == "true",
             memory_vector_min_score=float(os.getenv("MEMORY_VECTOR_MIN_SCORE", "0.55")),
             lesson_search_top_k=int(os.getenv("LESSON_SEARCH_TOP_K", "2")),
+            aging_wordlist_enforced=os.getenv("AGING_WORDLIST_ENFORCED", "true").strip().lower() == "true",
+            tts_enabled=os.getenv("TTS_ENABLED", "false").strip().lower() == "true",
+            tts_base_url=os.getenv("TTS_BASE_URL", cls.tts_base_url),
+            tts_model=os.getenv("TTS_MODEL", cls.tts_model),
+            tts_voice=os.getenv("TTS_VOICE", cls.tts_voice),
+            tts_format=os.getenv("TTS_FORMAT", cls.tts_format),
+            tts_sample_rate=int(os.getenv("TTS_SAMPLE_RATE", "24000")),
         )
 
     def validate_live(self) -> None:

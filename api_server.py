@@ -14,7 +14,7 @@ from typing import Any, Callable, Literal
 from fastapi import FastAPI, Query, Request, Security
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,6 +33,7 @@ from xiaoliao_agent.checkin_reminder import (
     DailyCheckinService,
     checkin_policy_from_settings,
 )
+from xiaoliao_agent.text_utils import chunk_by_graphemes
 from xiaoliao_agent.user_data import (
     MemoryUserRepository,
     PostgresUserRepository,
@@ -91,6 +92,12 @@ class ConsentRequest(BaseModel):
     )
     personalization: bool = False
     sensitive: bool = False
+
+
+class SpeechRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class DeleteUserRequest(BaseModel):
@@ -324,10 +331,10 @@ def create_app(
     def _stream_response(body: dict[str, Any], rid: str) -> StreamingResponse:
         async def events():
             reply = str(body.get("reply", ""))
-            for start in range(0, len(reply), 4):
+            for chunk in chunk_by_graphemes(reply, 4) or [""]:
                 yield (
                     "event: message\n"
-                    f"data: {json.dumps({'content': reply[start:start + 4]}, ensure_ascii=False)}\n\n"
+                    f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
                 )
             done = {
                 key: body[key]
@@ -430,6 +437,7 @@ def create_app(
             raise ApiContractError(403, "AGENT_DEBUG_FORBIDDEN")
         if not app.state.rate_limiter.allow(principal, payload.user_id):
             return json_response(429, error_body("AGENT_RATE_LIMITED", rid), rid)
+        history = [item.model_dump() for item in payload.conversation_history]
         idem = request.headers.get("idempotency-key", "")
         executing = False
         if idem:
@@ -446,12 +454,13 @@ def create_app(
             result = await run_in_threadpool(
                 app.state.agent.chat,
                 payload.message,
-                [],
+                history,
                 payload.context.user_summary,
                 payload.user_id,
                 payload.session_id,
                 payload.context.consent.personalization,
                 request_id=rid,
+                context_prefs=payload.context.model_dump(),
             )
         except Exception:
             body = error_body("AGENT_MODEL_UNAVAILABLE", rid)
@@ -511,6 +520,7 @@ def create_app(
         if not app.state.rate_limiter.allow(principal, payload.user_id):
             return json_response(429, error_body("AGENT_RATE_LIMITED", rid), rid)
 
+        history = [item.model_dump() for item in payload.conversation_history]
         idem = request.headers.get("idempotency-key", "")
         executing = False
         if idem:
@@ -526,63 +536,104 @@ def create_app(
                 return _stream_response(cached_body, rid)
             executing = True
 
-        try:
-            result = await run_in_threadpool(
-                app.state.agent.chat,
-                payload.message,
-                [],
-                payload.context.user_summary,
+        async def events():
+            reply_parts: list[str] = []
+            done_payload: dict[str, Any] = {}
+            replaced = False
+            try:
+                gen = app.state.agent.chat_stream(
+                    payload.message,
+                    history,
+                    payload.context.user_summary,
+                    payload.user_id,
+                    payload.session_id,
+                    payload.context.consent.personalization,
+                    context_prefs=payload.context.model_dump(),
+                )
+                while True:
+                    item = await run_in_threadpool(next, gen)
+                    item_type = item.get("type")
+                    if item_type == "status":
+                        yield (
+                            "event: status\n"
+                            f"data: {json.dumps({'stage': item.get('stage')}, ensure_ascii=False)}\n\n"
+                        )
+                    elif item_type in {"token", "message"}:
+                        if not replaced:
+                            content = str(item.get("content", ""))
+                            reply_parts.append(content)
+                            yield (
+                                "event: message\n"
+                                f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                            )
+                    elif item_type == "corrected":
+                        replaced = True
+                        content = str(item.get("reply", ""))
+                        reply_parts.append(content)
+                        yield (
+                            "event: message\n"
+                            f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                        )
+                    elif item_type == "done":
+                        done_payload = item
+                        break
+            except Exception:
+                body = error_body("AGENT_MODEL_UNAVAILABLE", rid)
+                if executing:
+                    await app.state.idempotency.finish(principal, idem, 502, body)
+                yield "event: error\n" + f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+                return
+
+            reply = "".join(reply_parts)
+            done = {
+                "session_id": payload.session_id,
+                "intent": normalize_intent(done_payload.get("intent", "chat"), done_payload.get("action")),
+                "action": done_payload.get("action"),
+                "blocked": bool(done_payload.get("blocked", False)),
+                "crisis_detected": bool(done_payload.get("crisis_detected", False)),
+                "safety_violation": bool(done_payload.get("safety_violation", False)),
+                "rewritten": bool(done_payload.get("rewritten", False)),
+            }
+            response_body = dict(done)
+            response_body["reply"] = reply
+            log_conversation_pair_safe(
+                app.state.user_data,
                 payload.user_id,
-                payload.session_id,
-                payload.context.consent.personalization,
+                user_text=payload.message,
+                reply=reply,
+                intent=done["intent"],
                 request_id=rid,
             )
+            if executing:
+                await app.state.idempotency.finish(principal, idem, 200, response_body)
+            yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={"X-Request-ID": rid, "Cache-Control": "no-cache"},
+        )
+
+    @app.post("/v1/speech", responses=error_responses)
+    async def v1_speech(
+        payload: SpeechRequest,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        authorize(request)
+        rid = request_id(request)
+        agent: XiaoliaoAgent = app.state.agent
+        if agent.tts_client is None:
+            return json_response(501, error_body("AGENT_TTS_DISABLED", rid), rid)
+        try:
+            audio = await run_in_threadpool(agent.tts_client.synthesize, payload.text)
         except Exception:
-            body = error_body("AGENT_MODEL_UNAVAILABLE", rid)
-            if executing:
-                await app.state.idempotency.finish(principal, idem, 502, body)
-            return json_response(502, body, rid)
-
-        if result.error_code == "AGENT_MODEL_TIMEOUT":
-            body = error_body(result.error_code, rid)
-            if executing:
-                await app.state.idempotency.finish(principal, idem, 504, body)
-            return json_response(504, body, rid)
-        if result.error_code and result.error_code != "action_policy_violation":
-            body = error_body(result.error_code, rid)
-            if executing:
-                await app.state.idempotency.finish(principal, idem, 502, body)
-            return json_response(502, body, rid)
-
-        debug_payload = (
-            V1DebugInfo(inspection=inspection_payload(result), sources=result.sources)
-            if payload.debug and is_debug
-            else None
+            return json_response(502, error_body("AGENT_MODEL_UNAVAILABLE", rid), rid)
+        return Response(
+            content=audio,
+            media_type="audio/wav",
+            headers={"X-Request-ID": rid, "Cache-Control": "no-cache"},
         )
-        response_body = V1ChatResponse(
-            session_id=payload.session_id,
-            reply=result.reply,
-            intent=normalize_intent(result.intent, result.action),
-            action=result.action,
-            blocked=result.blocked,
-            crisis_detected=result.crisis_detected,
-            safety_violation=result.safety_violation,
-            rewritten=result.rewritten,
-            debug=debug_payload,
-        ).model_dump(exclude={"debug"})
-        if debug_payload is not None:
-            response_body["debug"] = debug_payload.model_dump()
-        log_conversation_pair_safe(
-            app.state.user_data,
-            payload.user_id,
-            user_text=payload.message,
-            reply=response_body["reply"],
-            intent=response_body["intent"],
-            request_id=rid,
-        )
-        if executing:
-            await app.state.idempotency.finish(principal, idem, 200, response_body)
-        return _stream_response(response_body, rid)
 
     @app.post("/v1/users/consent", responses=error_responses)
     async def set_user_consent(

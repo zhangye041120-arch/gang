@@ -160,7 +160,7 @@ def test_history_rag_and_memory_are_limited_untrusted_data():
 def test_timeout_uses_versioned_fallback_and_keeps_request_id_internal():
     error = ModelTimeoutError("internal timeout", request_id="req-timeout")
     result = make_agent(ConfigurableMainClient(error=error)).chat("我最近有点累")
-    assert result.reply == GENERIC_FALLBACK
+    assert result.reply == "这次回复有点慢，没有及时接上话。你可以再和我说一次，我慢慢听。"
     assert result.error_code == "AGENT_MODEL_TIMEOUT"
     assert result.request_id == "req-timeout"
 

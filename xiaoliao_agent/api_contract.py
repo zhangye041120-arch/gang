@@ -21,11 +21,28 @@ class V1Consent(BaseModel):
     personalization: StrictBool = False
 
 
+class V1Accessibility(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    large_text: StrictBool = False
+    high_contrast: StrictBool = False
+    voice_enabled: StrictBool = False
+
+
+class V1ConversationMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    role: Literal["user", "assistant"]
+    content: StrictStr = Field(min_length=1, max_length=4000)
+
+
 class V1Context(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     consent: V1Consent = Field(default_factory=V1Consent)
     user_summary: StrictStr = Field(default="", max_length=2000)
+    city: StrictStr = Field(default="", max_length=64)
+    accessibility: V1Accessibility = Field(default_factory=V1Accessibility)
 
 
 class V1ChatRequest(BaseModel):
@@ -35,6 +52,7 @@ class V1ChatRequest(BaseModel):
     session_id: StrictStr = Field(min_length=1, max_length=128, pattern=_ID_PATTERN)
     message: StrictStr = Field(min_length=1, max_length=2000)
     context: V1Context = Field(default_factory=V1Context)
+    conversation_history: list[V1ConversationMessage] = Field(default_factory=list, max_length=30)
     debug: StrictBool = False
 
 
@@ -101,6 +119,7 @@ ERROR_CODES: dict[str, str] = {
     "AGENT_CRISIS_BLOCKED": "危机信号拦截",
     "AGENT_KB_UNAVAILABLE": "知识库不可用",
     "AGENT_SESSION_NOT_FOUND": "会话不存在",
+    "AGENT_TTS_DISABLED": "语音合成未开启",
 }
 
 

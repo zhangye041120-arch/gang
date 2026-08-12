@@ -130,9 +130,34 @@ def test_v1_chat_stream_returns_sse_after_safety_pipeline():
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
         assert response.headers["x-request-id"] == "stream-req-1"
+        assert "event: status" in response.text
         assert "event: message" in response.text
         assert "event: done" in response.text
         assert "event: error" not in response.text
+
+
+def test_v1_speech_disabled_returns_stable_501():
+    with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
+        response = client.post(
+            "/v1/speech",
+            json={"text": "你好"},
+            headers=headers(),
+        )
+        assert response.status_code == 501
+        assert response.json()["error_code"] == "AGENT_TTS_DISABLED"
+
+
+def test_v1_chat_accepts_conversation_history():
+    with TestClient(create_app(fake_agent, api_token="test-token", test_mode=True)) as client:
+        response = client.post(
+            "/v1/chat",
+            json=payload(conversation_history=[
+                {"role": "user", "content": "我昨天睡得很好"},
+                {"role": "assistant", "content": "那就好"},
+            ]),
+            headers=headers(),
+        )
+        assert response.status_code == 200
 
 
 def test_v1_chat_stream_requires_bearer_token():

@@ -19,7 +19,7 @@ class CrisisNotifier:
     def notify(self, event: CrisisEvent) -> list[str]:
         if event.event_id in self._processed:
             return []
-        if self.route == "unconfigured":
+        if self.route == "unconfigured" and self.sender is None:
             self._processed.add(event.event_id)
             return ["route_unconfigured"]
         if self.sender is None:

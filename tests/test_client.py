@@ -86,7 +86,7 @@ def test_client_accepts_max_tokens_override():
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     client = make_client(httpx.MockTransport(handler))
-    assert client.max_tokens == 400
+    assert client.max_tokens == 800
     custom = OpenAICompatibleClient(
         "https://model.invalid/v1",
         "secret-key",

@@ -10,7 +10,7 @@ reference data by the main prompt.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -62,6 +62,41 @@ _CITY_PATTERN = re.compile(
 )
 
 _CITY_FILLER = re.compile(r"^(今天|明天|后天|现在|这几天|外面|这边|咱们这|我们这)")
+
+_DAY_OFFSET_RE = re.compile(
+    r"(?P<day>今天|明天|明日|后天|后日|大后天|昨天|昨日|前天)",
+    re.I,
+)
+
+_DAY_OFFSET_MAP: dict[str, int] = {
+    "今天": 0,
+    "明天": 1,
+    "明日": 1,
+    "后天": 2,
+    "后日": 2,
+    "大后天": 3,
+    "昨天": -1,
+    "昨日": -1,
+    "前天": -2,
+}
+
+
+def _resolve_day_offset(text: str) -> int:
+    """Return day offset from today based on the user's text.
+
+    0 = today, 1 = tomorrow, 2 = day-after-tomorrow, -1 = yesterday, etc.
+    """
+    match = _DAY_OFFSET_RE.search(text or "")
+    if match:
+        return _DAY_OFFSET_MAP.get(match.group("day"), 0)
+    return 0
+
+
+def _target_date_string(day_offset: int) -> str:
+    """Return a human-readable date string for the given day offset."""
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    target = now + timedelta(days=day_offset)
+    return f"{target.year}年{target.month}月{target.day}日"
 
 
 @dataclass(frozen=True)
@@ -118,7 +153,9 @@ def _fetch_clock() -> LiveContext:
 def _web_search_query(text: str, settings: Settings) -> str | None:
     if WEATHER_KEYWORDS.search(text):
         city = extract_city(text, settings.live_default_city)
-        return f"{city} 今天天气 气温 穿衣建议"
+        offset = _resolve_day_offset(text)
+        date_str = _target_date_string(offset)
+        return f"{city} {date_str} 天气 实时气温 预报"
     if NEARBY_KEYWORDS.search(text):
         city = extract_city(text, settings.live_default_city)
         return f"{city} 附近 医院 药店 公园 超市 菜市场"
@@ -134,6 +171,21 @@ def _web_search_query(text: str, settings: Settings) -> str | None:
     return None
 
 
+def _freshness_for(text: str) -> int:
+    """Pick a search freshness (days) appropriate for the query type.
+
+    DashScope only accepts [7, 30, 180, 365]; _clamp_freshness maps to the
+    nearest valid value.
+    """
+    if WEATHER_KEYWORDS.search(text):
+        return 7  # DashScope minimum; query includes explicit date for accuracy
+    if NEWS_KEYWORDS.search(text):
+        return 7  # last week
+    if CALENDAR_KEYWORDS.search(text):
+        return 7
+    return 30  # drug facts, nearby places, anti-scam, general
+
+
 def _fetch_web_context(
     text: str,
     settings: Settings,
@@ -145,9 +197,18 @@ def _fetch_web_context(
     if not query:
         return None
     try:
-        results = search_web(query, settings, client=client)
+        results = search_web(query, settings, client=client, freshness=_freshness_for(text))
     except WebSearchError:
-        return None
+        return LiveContext(
+            label="live:web-unavailable",
+            section="联网检索",
+            content="联网检索暂时不可用，我先按已有知识和通用陪伴原则回答。",
+            sources=[{
+                "source": "live:web-unavailable",
+                "title": "联网检索不可用",
+                "content": "联网检索暂时不可用，我先按已有知识和通用陪伴原则回答。",
+            }],
+        )
     search_result = format_search_context(query, results, settings.web_search_max_results)
     return LiveContext(
         label="live:web",

@@ -78,6 +78,44 @@ def test_vector_failure_falls_back_to_lexical_search():
     assert kb.last_search_error["type"] == "vector_search_unavailable"
 
 
+def test_rerank_reorders_retrieved_chunks():
+    chunks = split_markdown(
+        "## 甲\n\n苹果很好吃。\n## 乙\n\n香蕉很甜。\n## 丙\n\n橘子很酸。",
+        source="kb",
+    )
+    ids = [chunk.chunk_id for chunk in chunks]
+
+    def vector_search(query, top_k):
+        return [(ids[0], 0.9), (ids[1], 0.8), (ids[2], 0.7)][:top_k]
+
+    def rerank(query, documents):
+        return [0.1, 0.9, 0.8]
+
+    kb = KnowledgeBase(chunks, vector_search=vector_search, rerank=rerank, rerank_candidates=2)
+    results = kb.search("zzzz", top_k=2)
+    assert results[0][0].chunk_id == ids[1]
+    assert "香蕉" in results[0][0].content
+
+
+def test_rerank_failure_falls_back_to_hybrid():
+    chunks = split_markdown(
+        "## 甲\n\n苹果很好吃。\n## 乙\n\n香蕉很甜。",
+        source="kb",
+    )
+    ids = [chunk.chunk_id for chunk in chunks]
+
+    def vector_search(query, top_k):
+        return [(ids[0], 0.9), (ids[1], 0.8)][:top_k]
+
+    def broken_rerank(query, documents):
+        raise RuntimeError("rerank down")
+
+    kb = KnowledgeBase(chunks, vector_search=vector_search, rerank=broken_rerank)
+    results = kb.search("zzzz", top_k=2)
+    assert results
+    assert kb.last_search_error["type"] == "rerank_unavailable"
+
+
 def test_search_results_include_provenance_metadata():
     kb = KnowledgeBase.from_files(Path(__file__).parents[1] / "knowledge" / "CBT知识库_Agent版.md")
     _, sources = kb.context("安全评估", top_k=1)
