@@ -16,7 +16,7 @@ import uuid
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-RAG_CASES_PATH = PROJECT_ROOT / "knowledge" / "rag_regression_v2.json"
+RAG_CASES_PATH = PROJECT_ROOT / "rag_cases.json"
 CODE_VERSION = "rag-eval-1.0"
 
 
@@ -210,11 +210,6 @@ def make_knowledge_base():
     return KnowledgeBase.from_files(
         settings.knowledge_path,
         settings.lessons_path,
-        settings.elder_scenarios_path,
-        settings.regional_resources_path,
-        settings.health_knowledge_path,
-        settings.fraud_knowledge_path,
-        settings.leisure_knowledge_path,
         version=settings.knowledge_version,
     )
 

@@ -1,4 +1,4 @@
-from dataclasses import replace
+﻿from dataclasses import replace
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,6 +29,7 @@ from .guardrails import (
     CRISIS_FALLBACK,
     FRAUD_FALLBACK,
     GENERIC_FALLBACK,
+    MEDICAL_DISCLAIMER,
     MEDICAL_FALLBACK,
     UNSAFE_FALLBACK,
     GuardrailResult,
@@ -457,11 +458,6 @@ class XiaoliaoAgent:
             self.kb = KnowledgeBase.from_files(
                 self.settings.knowledge_path,
                 self.settings.lessons_path,
-                self.settings.elder_scenarios_path,
-                self.settings.regional_resources_path,
-                self.settings.health_knowledge_path,
-                self.settings.fraud_knowledge_path,
-                self.settings.leisure_knowledge_path,
                 version=self.settings.knowledge_version,
                 vector_search=vector_search,
             )
@@ -546,17 +542,29 @@ class XiaoliaoAgent:
         history: list[dict[str, str]],
         memory_context: str,
     ) -> MainResponse:
-        raw = self.main_client.chat(
-            main_messages(
-                user_text,
-                context,
-                history,
-                self.settings.prompt_version,
-                memory_context,
-            ),
-            json_mode=True,
+        messages = main_messages(
+            user_text,
+            context,
+            history,
+            self.settings.prompt_version,
+            memory_context,
         )
-        return parse_main(raw)
+        raw = self.main_client.chat(messages, json_mode=True)
+        try:
+            return parse_main(raw)
+        except AgentInvalidResponseError:
+            # One retry tolerates a single malformed JSON response.
+            raw = self.main_client.chat(
+                main_messages(
+                    user_text,
+                    context,
+                    history,
+                    self.settings.prompt_version,
+                    memory_context,
+                ),
+                json_mode=True,
+            )
+            return parse_main(raw)
 
     def _generate_stream(
         self,
@@ -647,7 +655,10 @@ class XiaoliaoAgent:
                     stored = fut.result()
                     effective_memory = "\n".join(part for part in (memory_context, stored) if part)
                 elif fut is fut_live:
-                    live = fut.result()
+                    try:
+                        live = fut.result()
+                    except Exception:
+                        live = None
                     if live is not None and live.content:
                         combined_context = "\n\n".join(
                             part for part in (combined_context, f"[{live.section}]\n{live.content}") if part
@@ -861,13 +872,19 @@ class XiaoliaoAgent:
         session_id: str,
         sources: list[dict[str, Any]] | None = None,
         rewritten: bool = False,
+        original_reply: str = "",
     ) -> AgentResult:
-        replies = {
-            "crisis": CRISIS_FALLBACK,
-            "medical_boundary": MEDICAL_FALLBACK,
-            "unsafe_content": UNSAFE_FALLBACK,
-        }
-        reply = replies[risk.risk_category]
+        # When the model's reply touches medical territory, keep the model's
+        # answer and append a disclaimer instead of replacing it entirely.
+        if getattr(risk, 'append_disclaimer', False) and original_reply.strip():
+            reply = original_reply.rstrip() + MEDICAL_DISCLAIMER
+        else:
+            replies = {
+                "crisis": CRISIS_FALLBACK,
+                "medical_boundary": MEDICAL_FALLBACK,
+                "unsafe_content": UNSAFE_FALLBACK,
+            }
+            reply = replies[risk.risk_category]
         if risk.risk_category == "unsafe_content" and any(
             str(rule).startswith("F") for rule in (risk.rule_ids or [])
         ):
@@ -1037,6 +1054,7 @@ class XiaoliaoAgent:
         # ── stream main agent ────────────────────────────────────
         accumulated = ""
         main_error: str | None = None
+        candidate: MainResponse | None = None
         try:
             gen = self._generate_stream(user_text, combined_context, history, effective_memory)
             while True:
@@ -1061,11 +1079,18 @@ class XiaoliaoAgent:
             return
 
         # ── deterministic postcheck ──────────────────────────────
-        if 'candidate' not in dir():
+        if candidate is None:
             candidate = parse_main(accumulated)
         candidate = apply_explicit_intent(user_text, candidate)
         quick = precheck(user_text, candidate.reply)
         if quick.risk_category != "normal":
+            if getattr(quick, 'append_disclaimer', False):
+                final_reply = candidate.reply.rstrip() + MEDICAL_DISCLAIMER
+                yield {"type": "token", "content": final_reply}
+                latency = int((time.perf_counter() - started) * 1000)
+                yield {"type": "done", "blocked": False, "crisis_detected": False,
+                       "safety_violation": False, "rewritten": False, "latency_ms": latency}
+                return
             result = self._guardrail_result(
                 quick, user_id=user_id, session_id=session_id, sources=sources,
             )
@@ -1126,6 +1151,13 @@ class XiaoliaoAgent:
                 return
             second_quick = precheck(user_text, candidate.reply)
             if second_quick.risk_category != "normal":
+                if getattr(second_quick, 'append_disclaimer', False):
+                    final_reply = candidate.reply.rstrip() + MEDICAL_DISCLAIMER
+                    yield {"type": "corrected", "reply": final_reply}
+                    latency = int((time.perf_counter() - started) * 1000)
+                    yield {"type": "done", "blocked": False, "crisis_detected": False,
+                           "safety_violation": False, "rewritten": True, "latency_ms": latency}
+                    return
                 result = self._guardrail_result(
                     second_quick, user_id=user_id, session_id=session_id,
                     sources=sources, rewritten=True,
@@ -1273,6 +1305,7 @@ class XiaoliaoAgent:
             return self._with_stages(
                 self._guardrail_result(
                     quick, user_id=user_id, session_id=session_id, sources=sources,
+                    original_reply=candidate.reply,
                 ),
                 stages,
             )
@@ -1350,6 +1383,7 @@ class XiaoliaoAgent:
                         session_id=session_id,
                         sources=sources,
                         rewritten=True,
+                        original_reply=candidate.reply,
                     ),
                     stages,
                 )

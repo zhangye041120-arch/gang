@@ -26,11 +26,6 @@ def main() -> int:
     kb = KnowledgeBase.from_files(
         settings.knowledge_path,
         settings.lessons_path,
-        settings.elder_scenarios_path,
-        settings.regional_resources_path,
-        settings.health_knowledge_path,
-        settings.fraud_knowledge_path,
-        settings.leisure_knowledge_path,
         version=settings.knowledge_version,
     )
     chunks_by_id = {chunk.chunk_id: chunk for chunk in kb.chunks}

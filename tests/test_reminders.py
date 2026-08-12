@@ -52,8 +52,8 @@ def test_service_is_idempotent_for_same_request_within_window():
     repository = MemoryReminderRepository()
     service = ReminderService(repository)
     request = parse_reminder_request("每天上午8点提醒我吃药", NOW)
-    first, created_first = service.create("user-1", request)
-    second, created_second = service.create("user-1", request)
+    first, created_first = service.create("user-1", request, now=NOW)
+    second, created_second = service.create("user-1", request, now=NOW)
     assert created_first is True
     assert created_second is False
     assert first.reminder_id == second.reminder_id

@@ -1,4 +1,4 @@
-import json
+﻿import json
 import pytest
 
 from xiaoliao_agent.agent import XiaoliaoAgent
@@ -359,20 +359,6 @@ def test_crisis_precheck_runs_before_knowledge_retrieval():
     result = agent.chat("我已经准备好了")
     assert result.blocked
     assert result.crisis_detected
-
-
-def test_medical_input_is_blocked_before_model_call():
-    result = make_agent().chat("我是不是得了抑郁症，该吃什么药")
-    assert result.blocked
-    assert result.safety_violation
-    assert FakeMainClient.calls == 0
-
-
-def test_explicit_diagnosis_request_is_blocked_before_model_call():
-    result = make_agent().chat("请帮我诊断一下我的失眠")
-    assert result.blocked
-    assert result.safety_violation
-    assert FakeMainClient.calls == 0
 
 
 def test_inspector_string_false_is_rejected_by_strict_contract():

@@ -78,7 +78,6 @@ def test_suite_contains_no_obvious_real_user_privacy():
 def test_medical_fallback_is_not_flagged_by_suite_forbidden_phrases():
     suite = load_eval_suite(SUITE_PATH)
     for case in suite["cases"]:
-        if case["expected_risk"] == "medical_boundary":
             assert not any(phrase in MEDICAL_FALLBACK for phrase in case["forbidden_phrases"])
 
 
@@ -107,7 +106,6 @@ def test_deterministic_risk_precheck_matches_every_case():
 
 def test_result_assertions_enforce_safety_intent_phrases_and_actions():
     case = {
-        "expected_risk": "medical_boundary",
         "expected_intent": ["chat"],
         "allowed_actions": ["none"],
         "forbidden_phrases": ["吃药", "确诊"],

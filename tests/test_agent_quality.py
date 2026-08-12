@@ -48,7 +48,7 @@ def run_case(message, main_responses, inspector_responses, *, fail_logs=False):
 
 @pytest.mark.parametrize(("message", "main_responses", "inspector_responses"), [
     ("普通消息", [main_reply()], [inspection()]),
-    ("普通消息", ["not-json"], []),
+    ("普通消息", ["not-json", "not-json"], []),
     ("普通消息", [main_reply()], ["not-json"]),
     ("我不想活了", [], []),
     ("普通消息", [main_reply("第一版"), main_reply("重写版")], [inspection(intent_accurate=False, error_pattern="intent_mismatch"), inspection()]),

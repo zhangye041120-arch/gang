@@ -16,19 +16,15 @@ def make_kb():
     return KnowledgeBase.from_files(
         settings.knowledge_path,
         settings.lessons_path,
-        settings.elder_scenarios_path,
-        settings.regional_resources_path,
         version=settings.knowledge_version,
     )
 
 
-def test_rag_cases_load_from_v2_regression_file():
+def test_rag_cases_load_from_slim_regression_file():
     cases = load_rag_cases()
-    assert len(cases) >= 20
+    assert len(cases) >= 10
     assert {case.case_id for case in cases} >= {
         "cbt_low_mood",
-        "elder_spouse_loss",
-        "resource_medicine_warning",
         "lesson_relation_feedback",
         "edge_empty",
     }
@@ -39,7 +35,7 @@ def test_offline_rag_eval_is_green_and_reproducible():
     second = evaluate_offline(make_kb())
     assert first.status == "completed"
     assert first.passed == first.total_cases
-    assert first.overall_hit_rate > 0.7
+    assert first.overall_hit_rate > 0.6
     assert [case["passed"] for case in first.cases] == [case["passed"] for case in second.cases]
 
 

@@ -135,6 +135,17 @@ def test_inspector_1_6_0_uses_shared_rag_to_judge_candidate():
     assert "不得因为缺少 RAG 内容判失败" in content
 
 
+def test_prompt_1_7_0_keeps_ordinary_mood_on_cbt_path():
+    main_content = get_prompt_spec("main-agent", "1.7.0").content
+    inspector_content = get_prompt_spec("inspector", "1.7.0").content
+    rewrite_content = get_prompt_spec("rewrite", "1.7.0").content
+    assert "心情不好" in main_content
+    assert "不是医疗问题" in main_content
+    assert "心情不好我能感觉到" in main_content
+    assert "普通情绪表达" in inspector_content
+    assert "按 CBT 陪伴重写" in rewrite_content
+
+
 def test_inspector_1_3_0_allows_reminder_confirmation_and_fails_closed():
     content = get_prompt_spec("inspector", "1.3.0").content
     assert "设置吃药、复诊、量血压等提醒" in content
@@ -142,6 +153,18 @@ def test_inspector_1_3_0_allows_reminder_confirmation_and_fails_closed():
     assert "阿司匹林是做什么的" in content
     assert "不属于医疗建议" in content
     assert "宁可拦截，不要放行" in content
+
+
+def test_inspector_1_7_0_allows_reported_and_reminder_medical_context():
+    content = get_prompt_spec("inspector", "1.7.0").content
+    for phrase in (
+        "医生让我停药了",
+        "设置停药、加药提醒",
+        "我不能替你做停药决定",
+        "停药后的通用注意事项",
+        "怎么诊断抑郁症",
+    ):
+        assert phrase in content
 
 
 def test_prompt_regression_set_has_high_risk_cases_and_human_labels():

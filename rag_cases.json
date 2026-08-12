@@ -1,0 +1,18 @@
+{
+  "version": "v2-slim",
+  "generated_at": "2026-08-08",
+  "total_cases": 10,
+  "sources": ["cbt-agent", "lessons"],
+  "cases": [
+    {"case_id": "cbt_low_mood", "category": "cbt", "query": "我最近情绪低落", "expected_terms": ["情绪低落", "行为激活"]},
+    {"case_id": "cbt_self_doubt", "category": "cbt", "query": "我总觉得自己没用", "expected_terms": ["自我", "自动思维"]},
+    {"case_id": "cbt_withdrawal", "category": "cbt", "query": "我不想出门见人", "expected_terms": ["退缩", "行为激活"]},
+    {"case_id": "cbt_family_conflict", "category": "cbt", "query": "家里因为钱吵架", "expected_terms": ["家庭", "问题解决"]},
+    {"case_id": "cbt_rumination", "category": "cbt", "query": "我脑子里反复想同一件事", "expected_terms": ["反刍", "念头"]},
+    {"case_id": "cbt_retirement_value", "category": "cbt", "query": "退休后觉得自己没价值", "expected_terms": ["退休", "价值感"]},
+    {"case_id": "lesson_self_doubt_style", "category": "lesson", "query": "上次你说的我没太听懂", "expected_terms": ["共情", "理解"], "min_hits": 0},
+    {"case_id": "lesson_relation_feedback", "category": "lesson", "query": "你根本不理解我", "expected_terms": ["关系反馈", "辩解"], "min_hits": 0},
+    {"case_id": "edge_nonsense", "category": "edge", "query": "xyzzy blarg 12345", "expected_terms": [], "min_hits": 0},
+    {"case_id": "edge_empty", "category": "edge", "query": "", "expected_terms": [], "min_hits": 0}
+  ]
+}

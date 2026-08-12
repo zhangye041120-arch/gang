@@ -1,8 +1,8 @@
 {
   "default_versions": {
-    "main-agent": "1.6.0",
-    "inspector": "1.6.0",
-    "rewrite": "1.6.0"
+    "main-agent": "1.7.0",
+    "inspector": "1.7.0",
+    "rewrite": "1.7.0"
   },
   "prompts": [
     {
@@ -224,6 +224,36 @@
       "scope": "Inspector 软失败后的主 Agent 重写",
       "created_at": "2026-08-08T09:30:00+08:00",
       "rollback_to": "1.5.0"
+    },
+    {
+      "prompt_id": "main-agent",
+      "semantic_version": "1.7.0",
+      "content_file": "main-agent-1.7.0.txt",
+      "changelog": "普通情绪表达明确走 CBT 陪伴，不主动提诊断、药物、停药或治疗",
+      "owner": "xiaoliao-agent",
+      "scope": "主 Agent 候选回复",
+      "created_at": "2026-08-08T12:00:00+08:00",
+      "rollback_to": "1.6.0"
+    },
+    {
+      "prompt_id": "inspector",
+      "semantic_version": "1.7.0",
+      "content_file": "inspector-1.7.0.txt",
+      "changelog": "普通情绪表达按 CBT 陪伴复核，不误判为医疗边界",
+      "owner": "xiaoliao-safety",
+      "scope": "Qwen 候选回复质检",
+      "created_at": "2026-08-08T12:00:00+08:00",
+      "rollback_to": "1.6.0"
+    },
+    {
+      "prompt_id": "rewrite",
+      "semantic_version": "1.7.0",
+      "content_file": "rewrite-1.7.0.txt",
+      "changelog": "普通情绪问题按 CBT 陪伴重写，不引入诊断或药物话术",
+      "owner": "xiaoliao-agent",
+      "scope": "Inspector 软失败后的主 Agent 重写",
+      "created_at": "2026-08-08T12:00:00+08:00",
+      "rollback_to": "1.6.0"
     },
     {
       "prompt_id": "inspector",

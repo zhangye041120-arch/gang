@@ -1,4 +1,4 @@
-"""Local reminder parsing and storage for the companion agent.
+﻿"""Local reminder parsing and storage for the companion agent.
 
 The reminder tool only records what the user asked for; it never modifies the
 system clock, schedules OS alarms, or pushes messages.  Persistence is
@@ -33,18 +33,7 @@ _DAY_MARKERS = {
     "明晚": 1,
     "后天": 2,
 }
-_TIME_MARKERS = {
-    "凌晨": 0,
-    "半夜": 0,
-    "早上": 7,
-    "早晨": 7,
-    "上午": 9,
-    "中午": 12,
-    "下午": 15,
-    "傍晚": 18,
-    "晚上": 20,
-    "夜里": 22,
-}
+
 
 
 @dataclass(frozen=True)
@@ -162,13 +151,19 @@ class ReminderService:
         user_id: str,
         request: ReminderRequest,
         source_request_id: str = "",
+        now: datetime | None = None,
     ) -> tuple[Reminder, bool]:
-        """Create a reminder, idempotent for the same user+request window."""
+        """Create a reminder, idempotent for the same user+request window.
+
+        ``now`` allows callers (and tests) to supply a fixed reference time;
+        production callers leave it as ``None`` to use the current wall clock.
+        """
+        reference_now = (now or datetime.now(BEIJING_TZ)).replace(tzinfo=BEIJING_TZ)
         fingerprint = request.fingerprint()
         existing = [
             item for item in self.repository.list_for_user(user_id)
             if item.fingerprint == fingerprint
-            and item.due_at >= datetime.now(BEIJING_TZ) - timedelta(hours=24)
+            and item.due_at >= reference_now - timedelta(hours=24)
         ]
         if existing:
             return existing[0], False
@@ -178,7 +173,7 @@ class ReminderService:
             content=request.content,
             due_at=request.due_at,
             recurring=request.recurring,
-            created_at=datetime.now(BEIJING_TZ),
+            created_at=reference_now,
             fingerprint=fingerprint,
             source_request_id=source_request_id,
         )

@@ -52,6 +52,22 @@ def test_import_is_idempotent_for_same_content(tmp_path):
     assert len(repository.rows) == 1
 
 
+def test_import_prunes_removed_sources(tmp_path):
+    keep = tmp_path / "keep.md"
+    removed = tmp_path / "removed.md"
+    keep.write_text("## CBT\n\n情绪识别。", encoding="utf-8")
+    removed.write_text("## 旧文档\n\n旧内容。", encoding="utf-8")
+    repository = MemoryKnowledgeRepository()
+    import_files(repository, [keep, removed], version="v1")
+    assert len(repository.rows) == 2
+
+    removed.unlink()
+    stats = import_files(repository, [keep], version="v1", prune=True)
+    assert stats.pruned == 1
+    assert len(repository.rows) == 1
+    assert next(iter(repository.rows.values())).source == "keep"
+
+
 def test_vector_failure_falls_back_to_lexical_search():
     def broken_vector_search(query, top_k):
         raise RuntimeError("embedding unavailable")
@@ -70,38 +86,31 @@ def test_search_results_include_provenance_metadata():
 
 
 def test_rag_regression_cases_are_machine_checkable():
-    regression = json.loads((Path(__file__).parents[1] / "knowledge" / "rag_regression_v1.json").read_text(encoding="utf-8"))
+    regression = json.loads((Path(__file__).parents[1] / "rag_cases.json").read_text(encoding="utf-8"))
     kb = KnowledgeBase.from_files(Path(__file__).parents[1] / "knowledge" / "CBT知识库_Agent版.md")
-    assert len(regression["cases"]) == 6
-    for case in regression["cases"]:
+    cbt_cases = [case for case in regression["cases"] if case.get("category") == "cbt"]
+    assert len(cbt_cases) == 6
+    for case in cbt_cases:
         results = kb.search(case["query"], top_k=5)
         text = "\n".join(chunk.content for chunk, _ in results)
         assert any(term in text for term in case["expected_terms"])
 
 
 def test_import_uses_stable_source_name_for_pure_cjk_file(tmp_path):
-    source = tmp_path / "适老生活场景.md"
+    source = tmp_path / "纯中文场景.md"
     source.write_text("## 退休适应\n\n退休后价值感流失。", encoding="utf-8")
     repository = MemoryKnowledgeRepository()
     import_files(repository, [source], version="v1")
     chunk = next(iter(repository.rows.values()))
-    assert chunk.source == _source_name("适老生活场景")
+    assert chunk.source == _source_name("纯中文场景")
 
 
-def test_knowledge_expansion_loads_elder_and_regional_sources():
+def test_knowledge_loads_only_cbt_and_lessons():
     root = Path(__file__).parents[1]
     kb = KnowledgeBase.from_files(
         root / "knowledge" / "CBT知识库_Agent版.md",
-        root / "knowledge" / "适老生活场景.md",
-        root / "knowledge" / "地区资源参考.md",
         root / "knowledge" / "lessons.md",
     )
-    assert len(kb.chunks) >= 99
     sources = {chunk.source for chunk in kb.chunks}
-    assert len(sources) >= 4
-
-
-def test_regional_resources_do_not_embed_phone_numbers():
-    text = (Path(__file__).parents[1] / "knowledge" / "地区资源参考.md").read_text(encoding="utf-8")
-    assert "1[3-9]\\d{9}" not in text
-    assert "待确认" in text or "替换" in text or "不能保证" in text
+    assert {"cbt-agent", "lessons"} <= sources
+    assert len(sources) == 2

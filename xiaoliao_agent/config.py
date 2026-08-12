@@ -67,7 +67,7 @@ class Settings:
     embedding_model: str = ""
     embedding_dimension: int = 1536
     knowledge_database_url: str = ""
-    prompt_version: str = "1.6.0"
+    prompt_version: str = "1.7.0"
     action_decline_cooldown_hours: int = 2
     quality_hash_salt: str = "xiaoliao-local-quality"
     api_token: str = ""
@@ -105,11 +105,6 @@ class Settings:
     memory_max_chars: int = 2000
     knowledge_path: Path = PROJECT_ROOT / "knowledge" / "CBT知识库_Agent版.md"
     lessons_path: Path = PROJECT_ROOT / "knowledge" / "lessons.md"
-    elder_scenarios_path: Path = PROJECT_ROOT / "knowledge" / "适老生活场景.md"
-    regional_resources_path: Path = PROJECT_ROOT / "knowledge" / "地区资源参考.md"
-    health_knowledge_path: Path = PROJECT_ROOT / "knowledge" / "健康常识与药品边界.md"
-    fraud_knowledge_path: Path = PROJECT_ROOT / "knowledge" / "诈骗案例库.md"
-    leisure_knowledge_path: Path = PROJECT_ROOT / "knowledge" / "老歌戏曲与休闲.md"
     lesson_search_top_k: int = 2
     memory_vector_search_enabled: bool = True
     memory_vector_min_score: float = 0.55
@@ -149,7 +144,7 @@ class Settings:
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1536")),
             knowledge_database_url=os.getenv("KNOWLEDGE_DATABASE_URL", ""),
-            prompt_version=os.getenv("PROMPT_VERSION", "1.6.0"),
+            prompt_version=os.getenv("PROMPT_VERSION", "1.7.0"),
             action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "2")),
             quality_hash_salt=os.getenv("QUALITY_HASH_SALT", "xiaoliao-local-quality"),
             api_token=os.getenv("API_TOKEN", ""),
@@ -187,11 +182,6 @@ class Settings:
             memory_max_chars=int(os.getenv("MEMORY_MAX_CHARS", "2000")),
             memory_vector_search_enabled=os.getenv("MEMORY_VECTOR_SEARCH_ENABLED", "true").strip().lower() == "true",
             memory_vector_min_score=float(os.getenv("MEMORY_VECTOR_MIN_SCORE", "0.55")),
-            elder_scenarios_path=os.getenv("ELDER_SCENARIOS_PATH") or cls.elder_scenarios_path,
-            regional_resources_path=os.getenv("REGIONAL_RESOURCES_PATH") or cls.regional_resources_path,
-            health_knowledge_path=os.getenv("HEALTH_KNOWLEDGE_PATH") or cls.health_knowledge_path,
-            fraud_knowledge_path=os.getenv("FRAUD_KNOWLEDGE_PATH") or cls.fraud_knowledge_path,
-            leisure_knowledge_path=os.getenv("LEISURE_KNOWLEDGE_PATH") or cls.leisure_knowledge_path,
             lesson_search_top_k=int(os.getenv("LESSON_SEARCH_TOP_K", "2")),
         )
 

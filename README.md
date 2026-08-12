@@ -137,9 +137,11 @@ python 运行/run_agent.py --debug
 
 ## 5. RAG 与延迟
 
-知识库按 Markdown 二级到四级标题分节，正文超过 1800 字符时按 1800 字符切分并保留 180 字符重叠；chunk 使用稳定内容哈希去重。当前运行时加载 99 chunks，数据库 `ai_knowledge_chunks` 已同步 99 行且 99/99 有 1536 维 Qwen 向量。
+知识库按 Markdown 二级到四级标题分节，正文超过 1800 字符时按 1800 字符切分并保留 180 字符重叠；chunk 使用稳定内容哈希去重。当前知识库只保留
+`knowledge/CBT知识库_Agent版.md` 与 `knowledge/lessons.md` 两个来源。
 
-RAG 评估见 `rag_runs/run-real-v1`：22/22，整体词项命中率 0.818；该指标是 expected_terms 命中率，不是人工语义准确率。
+RAG 评估用例见项目根目录 `rag_cases.json`，运行 `python run_rag_eval.py --offline`
+验证；指标是 expected_terms 命中率，不是人工语义准确率。
 
 延迟配置：
 
@@ -177,15 +179,13 @@ RAG_PARALLEL_ENABLED=true
 - 提醒设置：识别“每天上午8点提醒我吃药”等话术，本地记录提醒并注入确认上下文；
   重复请求幂等；只做本地记录，不修改系统、不推送，真实推送待 Java/企微。
 - 药品科普/健康常识：只回答通用公开常识，不给剂量、不开药、不诊断；个人用药决策
-  问题统一引导咨询医生/药师；知识文件见 `knowledge/健康常识与药品边界.md`。
+  问题统一引导咨询医生/药师，由确定性规则处理。
 - 诈骗识别：转账/汇款、银行卡/验证码、公检法、中奖/刷单等风险话术由确定性规则
-  拦截并给出防骗提示；案例知识见 `knowledge/诈骗案例库.md`。
-- 老歌戏曲/故事谜语：知识文件 `knowledge/老歌戏曲与休闲.md` 提供经典曲目、剧目和
-  播放指引，小辽可现场讲谜语和小故事。
+  拦截并给出防骗提示。
 
-以上新知识文件已进入本地内存 RAG，并已导入数据库向量库：
-`python import_knowledge.py` 新增 11 块，`python backfill_embeddings.py` 回填 11 个
-向量，当前 `ai_knowledge_chunks` 为 110 行且 110/110 有 1536 维向量。
+知识库导入与向量回填仍使用：
+`python import_knowledge.py`、`python backfill_embeddings.py`，默认只处理
+CBT 知识库与 lessons.md。
 
 ## 5.3 企微员工群每日签到提醒
 

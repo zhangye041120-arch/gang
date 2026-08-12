@@ -53,6 +53,18 @@ class ConfigurableMainClient:
         return self.payload if isinstance(self.payload, str) else json.dumps(self.payload, ensure_ascii=False)
 
 
+class RetryThenValidMainClient(ConfigurableMainClient):
+    def __init__(self):
+        super().__init__(payload=None)
+        self.calls = 0
+
+    def chat(self, messages, *, json_mode=False):
+        self.calls += 1
+        if self.calls == 1:
+            return "这不是 JSON"
+        return json.dumps(VALID_MAIN, ensure_ascii=False)
+
+
 class ChatOnlyMainClient:
     def chat(self, messages, *, json_mode=False):
         return json.dumps({
@@ -98,6 +110,13 @@ def test_plain_text_main_output_uses_safe_fallback_without_inspection():
     assert result.error_code == "AGENT_INVALID_JSON"
     assert "供应商" not in result.reply
     assert PassingInspector.calls == 0
+
+
+def test_main_generation_retries_once_on_invalid_json():
+    client = RetryThenValidMainClient()
+    result = make_agent(client).chat("我心情不好")
+    assert client.calls == 2
+    assert result.reply == VALID_MAIN["reply"]
 
 
 @pytest.mark.parametrize("action", [
@@ -152,7 +171,7 @@ def test_stage_latencies_are_recorded_for_main_pipeline():
         assert stage in result.stage_latencies
         assert result.stage_latencies[stage] >= 0
     assert result.main_model == "deepseek-v4-flash"
-    assert result.prompt_version == "1.6.0"
+    assert result.prompt_version == "1.7.0"
     assert "timeout" not in result.reply.lower()
 
 

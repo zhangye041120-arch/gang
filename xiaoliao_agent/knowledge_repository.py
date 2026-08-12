@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Iterable, Protocol
 
 from .knowledge import Chunk
 
@@ -7,6 +7,14 @@ from .knowledge import Chunk
 class KnowledgeRepository(Protocol):
     def upsert(self, chunk: Chunk) -> str:
         """Return inserted, updated, or skipped."""
+
+    def prune_unknown_sources(
+        self,
+        known_sources: Iterable[str],
+        *,
+        version: str,
+    ) -> int:
+        """Delete chunks whose source is not among *known_sources*."""
 
 
 @dataclass
@@ -21,6 +29,22 @@ class MemoryKnowledgeRepository:
             return "skipped"
         self.rows[chunk.chunk_id] = chunk
         return "updated" if current is not None else "inserted"
+
+    def prune_unknown_sources(
+        self,
+        known_sources: Iterable[str],
+        *,
+        version: str,
+    ) -> int:
+        allowed = set(known_sources)
+        removed = [
+            chunk_id
+            for chunk_id, chunk in self.rows.items()
+            if chunk.version == version and chunk.source not in allowed
+        ]
+        for chunk_id in removed:
+            del self.rows[chunk_id]
+        return len(removed)
 
 
 class PostgresKnowledgeRepository:
@@ -59,6 +83,26 @@ class PostgresKnowledgeRepository:
                 ),
             ).fetchone()
             return "inserted" if row else "skipped"
+
+    def prune_unknown_sources(
+        self,
+        known_sources: Iterable[str],
+        *,
+        version: str,
+    ) -> int:  # pragma: no cover - requires PostgreSQL
+        known = list(known_sources)
+        if not known:
+            return 0
+        placeholders = ", ".join(["%s"] * len(known))
+        with self._connect() as connection:
+            result = connection.execute(
+                f"""
+                DELETE FROM ai_knowledge_chunks
+                WHERE version = %s AND source NOT IN ({placeholders})
+                """,
+                (version, *known),
+            )
+            return result.rowcount
 
     def vector_search(self, vector: list[float], top_k: int, *, version: str = "v1") -> list[tuple[str, float]]:
         import json
