@@ -167,7 +167,7 @@ M7 API 只接受 Java/企微网关的内网请求。生产用户级请求同时�
 - 生产关闭 `/docs`、`/redoc` 和公开 `/openapi.json`。
 - 使用 `TrustedHostMiddleware` 并要求明确 Host 白名单。
 - 默认不开 CORS；M7 不接受浏览器直连。
-- 应用层限制请求体，默认 64 KiB；网关层设置更早的对应限制。
+- 应用层限制请求体，默认 256 KiB，覆盖当前合同允许的最大历史消息；网关层设置更早的对应限制。
 - 对所有响应增加 `X-Request-ID`、`X-Content-Type-Options: nosniff`、`Cache-Control: no-store`（健康检查除外）。
 - 生产不启用 debug traceback 或 reload。
 - 只信任明确的反向代理 IP，不无条件信任 `X-Forwarded-*`。
