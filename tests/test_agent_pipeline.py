@@ -61,6 +61,15 @@ class RecordingInspectorClient(FakeInspectorClient):
         return super().chat(messages, json_mode=json_mode)
 
 
+class ForbiddenWeatherModelClient:
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, json_mode=False):
+        self.calls += 1
+        raise AssertionError("天气快路径不应调用模型")
+
+
 def extract_tag(content: str, tag: str) -> str:
     start = f"<{tag}>\n"
     end = f"\n</{tag}>"
@@ -318,6 +327,138 @@ def test_fetch_rag_includes_live_clock_context_and_sources():
     assert "[当前时间]" in combined
     assert "2026年8月7日" in combined
     assert any(item["source"] == "live:clock" for item in sources)
+
+
+def _weather_live_context():
+    content = (
+        "沈阳今天实时天气：晴，气温30℃（体感30℃），湿度41%，风力3级。"
+        "今日气温20~30℃。白天最高降雨概率0%。"
+    )
+    return LiveContext(
+        label="live:weather",
+        section="实时天气",
+        content=content,
+        sources=[{"source": "live:weather", "title": "实时天气：沈阳", "content": content}],
+    )
+
+
+def test_weather_fast_path_skips_main_and_inspector_models():
+    main = ForbiddenWeatherModelClient()
+    inspector = ForbiddenWeatherModelClient()
+    live = _weather_live_context()
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=inspector,
+        live_context_provider=lambda text: live,
+    )
+
+    result = agent.chat("沈阳今天天气怎么样？")
+
+    assert result.reply == live.content
+    assert result.intent == "chat"
+    assert result.action is None
+    assert result.sources == live.sources
+    assert main.calls == 0
+    assert inspector.calls == 0
+
+
+def test_weather_follow_up_reuses_previous_query_and_skips_models():
+    main = ForbiddenWeatherModelClient()
+    inspector = ForbiddenWeatherModelClient()
+    live = _weather_live_context()
+    queries = []
+
+    def provider(text):
+        queries.append(text)
+        return live
+
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=inspector,
+        live_context_provider=provider,
+    )
+    history = [
+        {"role": "user", "content": "沈阳今天天气怎么样？"},
+        {"role": "assistant", "content": live.content},
+    ]
+
+    result = agent.chat("具体点", history)
+
+    assert result.reply == live.content
+    assert queries == ["沈阳今天天气怎么样？"]
+    assert main.calls == 0
+    assert inspector.calls == 0
+
+
+def test_weather_follow_up_after_proactive_assistant_message_skips_models():
+    main = ForbiddenWeatherModelClient()
+    inspector = ForbiddenWeatherModelClient()
+    live = _weather_live_context()
+    proactive = "沈阳今天天气不错，是晴天，气温30度。您打算出门走走吗？"
+    queries = []
+
+    def provider(text):
+        queries.append(text)
+        return live
+
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=inspector,
+        live_context_provider=provider,
+    )
+
+    result = agent.chat("具体点", [{"role": "assistant", "content": proactive}])
+
+    assert result.reply == live.content
+    assert queries == [proactive]
+    assert main.calls == 0
+    assert inspector.calls == 0
+
+
+def test_weather_follow_up_requires_weather_history_in_agent_pipeline():
+    main = RecordingMainClient()
+    inspector = RecordingInspectorClient()
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=inspector,
+        live_context_provider=lambda text: None,
+    )
+    history = [
+        {"role": "user", "content": "我最近睡不好"},
+        {"role": "assistant", "content": "您想具体说说吗？"},
+    ]
+
+    result = agent.chat("具体点", history)
+
+    assert result.reply
+    assert len(main.messages) == 1
+    assert len(inspector.messages) == 1
+
+
+def test_stream_weather_fast_path_skips_main_and_inspector_models():
+    main = ForbiddenWeatherModelClient()
+    inspector = ForbiddenWeatherModelClient()
+    live = _weather_live_context()
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=main,
+        inspector_client=inspector,
+        live_context_provider=lambda text: live,
+    )
+
+    events = list(agent.chat_stream("沈阳今天天气怎么样？"))
+    reply = "".join(event["content"] for event in events if event.get("type") == "token")
+    done = next(event for event in events if event.get("type") == "done")
+
+    assert reply == live.content
+    assert done["intent"] == "chat"
+    assert done["action"] is None
+    assert main.calls == 0
+    assert inspector.calls == 0
 
 
 def test_crisis_input_never_triggers_live_lookup():

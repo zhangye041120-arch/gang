@@ -36,7 +36,7 @@ from .guardrails import (
     precheck,
 )
 from .text_utils import apply_aging_filter
-from .live_context import LiveContext, fetch_live_context
+from .live_context import LiveContext, fetch_live_context, resolve_weather_query
 from .quality import MemoryLessonRepository
 from .knowledge import KnowledgeBase
 from .knowledge import PostgresKnowledgeRepository
@@ -61,6 +61,7 @@ from .api_contract import (
 )
 
 JAVA_INTENTS = frozenset({"chat", "checkin", "game", "exercise", "assessment", "community"})
+_LIVE_NOT_FETCHED = object()
 
 
 def _requires_medical_disclaimer(user_text: str, reply: str) -> bool:
@@ -237,8 +238,8 @@ _FALLBACK_REPLIES = {
     "AGENT_MODEL_NETWORK": "我这边网络有点不稳定，刚才没接上话。等一下我们再试一次好吗？",
     "AGENT_MODEL_HTTP": "服务那边暂时没回应，刚才这句话我没能接住。过一会儿再和我说说，好吗？",
     "AGENT_MODEL_RATE_LIMITED": "刚才问的人有点多，我没挤进去。稍等片刻再和我说一次，好吗？",
-    "AGENT_MODEL_INVALID_RESPONSE": "我刚才没有把话说明白。我们先慢一点，你可以再告诉我一次现在最困扰你的是什么。",
-    "AGENT_INVALID_JSON": "我刚才没有把话说明白。我们先慢一点，你可以再告诉我一次现在最困扰你的是什么。",
+    "AGENT_MODEL_INVALID_RESPONSE": GENERIC_FALLBACK,
+    "AGENT_INVALID_JSON": GENERIC_FALLBACK,
     "AGENT_INSPECTION_FAILED": "我这边安全确认暂时没通过，先不急着回答。你可以再慢慢和我说一遍，好吗？",
 }
 
@@ -785,6 +786,8 @@ class XiaoliaoAgent:
         memory_context: str,
         *,
         city: str = "",
+        live_query: str = "",
+        preloaded_live: Any = _LIVE_NOT_FETCHED,
     ) -> tuple[str, str, list[dict[str, object]]]:
         """Return (combined_context, effective_memory, sources).
 
@@ -802,7 +805,11 @@ class XiaoliaoAgent:
             if reminder_context:
                 combined_context = "\n\n".join(part for part in (reminder_context, combined_context) if part)
                 sources.append(reminder_source)
-            live = self._fetch_live(user_text, city)
+            live = (
+                self._fetch_live(live_query or user_text, city)
+                if preloaded_live is _LIVE_NOT_FETCHED
+                else preloaded_live
+            )
             if live is not None and live.content:
                 combined_context = "\n\n".join(
                     part for part in (combined_context, f"[{live.section}]\n{live.content}") if part
@@ -818,7 +825,12 @@ class XiaoliaoAgent:
             fut_kb = executor.submit(self.kb.context, user_text, self.settings.top_k)
             fut_lesson = executor.submit(self.lesson_bridge.context, user_text)
             fut_mem = executor.submit(self.memory_service.get_context, user_id, query=user_text) if personalization else None
-            fut_live = executor.submit(self._fetch_live, user_text, city)
+            fut_live = (
+                executor.submit(self._fetch_live, live_query or user_text, city)
+                if preloaded_live is _LIVE_NOT_FETCHED
+                else None
+            )
+            live = None if preloaded_live is _LIVE_NOT_FETCHED else preloaded_live
 
             for fut in as_completed([f for f in (fut_kb, fut_lesson, fut_mem, fut_live) if f is not None]):
                 if fut is fut_kb:
@@ -841,11 +853,12 @@ class XiaoliaoAgent:
                         live = fut.result()
                     except Exception:
                         live = None
-                    if live is not None and live.content:
-                        combined_context = "\n\n".join(
-                            part for part in (combined_context, f"[{live.section}]\n{live.content}") if part
-                        )
-                        sources.extend(live.sources)
+
+            if live is not None and live.content:
+                combined_context = "\n\n".join(
+                    part for part in (combined_context, f"[{live.section}]\n{live.content}") if part
+                )
+                sources.extend(live.sources)
 
         if reminder_context:
             combined_context = "\n\n".join(part for part in (reminder_context, combined_context) if part)
@@ -1257,11 +1270,44 @@ class XiaoliaoAgent:
                    "safety_violation": result.safety_violation, "latency_ms": 0}
             return
 
+        weather_query = resolve_weather_query(user_text, history)
+        preloaded_live: Any = _LIVE_NOT_FETCHED
+        if weather_query is not None:
+            yield {"type": "status", "stage": "weather"}
+            try:
+                preloaded_live = self._fetch_live(weather_query, city)
+            except Exception:
+                preloaded_live = None
+            if (
+                preloaded_live is not None
+                and preloaded_live.label == "live:weather"
+                and preloaded_live.content
+            ):
+                result = self._weather_result(preloaded_live)
+                for chunk in chunk_by_graphemes(result.reply, 4) or [""]:
+                    yield {"type": "token", "content": chunk}
+                latency = int((time.perf_counter() - started) * 1000)
+                yield {
+                    "type": "done",
+                    "blocked": False,
+                    "crisis_detected": False,
+                    "safety_violation": False,
+                    "rewritten": False,
+                    "latency_ms": latency,
+                    "intent": "chat",
+                    "action": None,
+                    "recommendation_id": None,
+                    "request_id": None,
+                }
+                return
+
         yield {"type": "status", "stage": "rag"}
         # ── parallel RAG ────────────────────────────────────────
         combined_context, effective_memory, sources = self._fetch_rag(
             user_text, user_id, personalization, memory_context,
             city=city,
+            live_query=weather_query or "",
+            preloaded_live=preloaded_live,
         )
 
         yield {"type": "status", "stage": "generating"}
@@ -1522,6 +1568,20 @@ class XiaoliaoAgent:
         result.stage_latencies = dict(stages)
         return result
 
+    def _weather_result(self, live: LiveContext) -> AgentResult:
+        return AgentResult(
+            live.content,
+            "chat",
+            None,
+            False,
+            False,
+            False,
+            False,
+            InspectionResult(),
+            list(live.sources),
+            prompt_version=self.settings.prompt_version,
+        )
+
     def _chat_impl(
         self,
         user_text: str,
@@ -1546,10 +1606,28 @@ class XiaoliaoAgent:
                 stages,
             )
 
+        weather_query = resolve_weather_query(user_text, history)
+        preloaded_live: Any = _LIVE_NOT_FETCHED
+        if weather_query is not None:
+            start = time.perf_counter()
+            try:
+                preloaded_live = self._fetch_live(weather_query, city)
+            except Exception:
+                preloaded_live = None
+            stages["weather_ms"] = max(0, int((time.perf_counter() - start) * 1000))
+            if (
+                preloaded_live is not None
+                and preloaded_live.label == "live:weather"
+                and preloaded_live.content
+            ):
+                return self._with_stages(self._weather_result(preloaded_live), stages)
+
         start = time.perf_counter()
         combined_context, effective_memory, sources = self._fetch_rag(
             user_text, user_id, personalization, memory_context,
             city=city,
+            live_query=weather_query or "",
+            preloaded_live=preloaded_live,
         )
         stages["rag_ms"] = max(0, int((time.perf_counter() - start) * 1000))
 

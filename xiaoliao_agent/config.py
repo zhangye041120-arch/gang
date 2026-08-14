@@ -57,6 +57,10 @@ class Settings:
     web_search_forced_search: bool = False
     web_search_timeout_seconds: float = 45.0
     web_search_max_results: int = 5
+    weather_provider: str = "wttr"
+    weather_api_base: str = "https://wttr.in"
+    weather_timeout_seconds: float = 6.0
+    weather_cache_ttl_minutes: int = 10
     model_fallback_enabled: bool = True
     reminders_enabled: bool = True
     timeout_seconds: float = 60.0
@@ -148,6 +152,10 @@ class Settings:
             web_search_forced_search=os.getenv("WEB_SEARCH_FORCED_SEARCH", "false").strip().lower() == "true",
             web_search_timeout_seconds=float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "45")),
             web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
+            weather_provider=os.getenv("WEATHER_PROVIDER", "wttr"),
+            weather_api_base=os.getenv("WEATHER_API_BASE", "https://wttr.in"),
+            weather_timeout_seconds=float(os.getenv("WEATHER_TIMEOUT_SECONDS", "6")),
+            weather_cache_ttl_minutes=int(os.getenv("WEATHER_CACHE_TTL_MINUTES", "10")),
             model_fallback_enabled=os.getenv("MODEL_FALLBACK_ENABLED", "true").strip().lower() == "true",
             reminders_enabled=os.getenv("REMINDERS_ENABLED", "true").strip().lower() == "true",
             timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "60")),

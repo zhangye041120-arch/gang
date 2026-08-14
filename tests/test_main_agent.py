@@ -106,7 +106,9 @@ def test_parse_main_rejects_missing_wrong_empty_and_extra_fields(payload):
 
 def test_plain_text_main_output_uses_safe_fallback_without_inspection():
     result = make_agent(ConfigurableMainClient("原始供应商文本和内部错误")).chat("我最近有点累")
+    assert result.reply == "我刚才没能把这句话接稳。请再说一次，我会接着刚才的话回答。"
     assert result.reply == GENERIC_FALLBACK
+    assert "最困扰" not in result.reply
     assert result.error_code == "AGENT_INVALID_JSON"
     assert "供应商" not in result.reply
     assert PassingInspector.calls == 0

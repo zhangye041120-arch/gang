@@ -54,12 +54,22 @@ SCAM_CASE_KEYWORDS = re.compile(r"(防诈骗|防骗|诈骗|骗局|骗子|案例)
 
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 
-_CITY_PATTERN = re.compile(
-    r"([\u4e00-\u9fa5]{2,6}?)(?:市|县|区|省)?的?(?:今天|明天|后天|现在|这几天|外面|这边|咱们这|我们这)?"
-    r"(?:天气|气温|温度|多少度|热不热|冷不冷|下不下雨|天气预报)"
+# Words peeled off the right of the prefix (the text before the weather
+# keyword) so the trailing CJK run becomes the city name, not
+# "今天/会/吗/这边/...".  Covers varied phrasings like
+# "上海明天会下雨吗" or "咱们这边天气".
+_CITY_STRIP = re.compile(
+    r"(咱们这边|我们这边|这边|咱们这|我们这|外面|这儿|那儿|"
+    r"今天|明天|后天|大后天|现在|这几天|"
+    r"的|会|有|下|不|要|带|冷|热|吗|了|得|是|在|去|到|从|几|多少|度)$"
 )
 
-_CITY_FILLER = re.compile(r"^(今天|明天|后天|现在|这几天|外面|这边|咱们这|我们这)")
+_WEATHER_DETAIL_FOLLOW_UP = re.compile(
+    r"^(?:(?:再)?(?:具体|详细)(?:一)?点(?:儿)?|再说说)[吧吗呢？?。！!]*$"
+)
+_WEATHER_DAY_FOLLOW_UP = re.compile(
+    r"^那?(?P<day>今天|明天|后天|大后天)(?:呢)?[？?。！!]*$"
+)
 
 _DAY_OFFSET_RE = re.compile(
     r"(?P<day>今天|明天|明日|后天|后日|大后天|昨天|昨日|前天)",
@@ -96,6 +106,70 @@ def _target_date_string(day_offset: int) -> str:
     target = now + timedelta(days=day_offset)
     return f"{target.year}年{target.month}月{target.day}日"
 
+# WWO/weatherapi weather codes -> Chinese description (used by wttr.in).
+_WEATHER_CODE_ZH: dict[str, str] = {
+    "113": "晴", "116": "多云", "119": "阴", "122": "阴",
+    "143": "薄雾", "248": "雾", "260": "冻雾",
+    "176": "局部小雨", "263": "局部小雨", "293": "局部小雨", "353": "小阵雨",
+    "266": "小雨", "296": "小雨", "281": "局部毛毛雨", "284": "毛毛雨",
+    "299": "中阵雨", "305": "大阵雨", "356": "中到大阵雨", "359": "暴阵雨",
+    "302": "中雨", "308": "大雨",
+    "179": "局部小雪", "323": "局部小雪", "368": "小阵雪",
+    "326": "小雪", "329": "局部中雪", "332": "中雪",
+    "335": "局部大雪", "338": "大雪", "371": "中到大阵雪",
+    "182": "局部雨夹雪", "185": "局部雨夹雪",
+    "317": "小雨夹雪", "320": "雨夹雪",
+    "362": "小雨夹雪阵雨", "365": "中到大雨夹雪阵雨",
+    "200": "局部雷阵雨", "386": "局部雷阵雨", "392": "局部雷阵雪",
+    "389": "雷阵雨", "395": "雷阵雪",
+    "227": "吹雪", "230": "暴风雪",
+    "350": "冰粒", "374": "小冰粒阵雨", "377": "中到大冰粒阵雨",
+    "311": "小冻雨", "314": "冻雨",
+}
+
+_weather_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
+
+
+def _weather_desc_zh(code: Any) -> str:
+    return _WEATHER_CODE_ZH.get(str(code or "").strip(), "未知")
+
+
+def _kmh_to_beaufort(kmph: Any) -> int:
+    """Convert wind speed in km/h to the Beaufort scale (0-12)."""
+    speed = int(kmph or 0)
+    for level, threshold in enumerate((1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118)):
+        if speed < threshold:
+            return level
+    return 12
+
+
+def _day_label(offset: int) -> str:
+    return {0: "今天", 1: "明天", 2: "后天", 3: "大后天"}.get(offset, f"{offset}天后")
+
+
+def _daytime_hours(day: dict[str, Any]) -> list[dict[str, Any]]:
+    """Daytime (09:00-18:00) hourly entries; falls back to all hours."""
+    hours = day.get("hourly") or []
+    daytime = [
+        h for h in hours
+        if str(h.get("time", "0")).isdigit() and 900 <= int(h["time"]) <= 1800
+    ]
+    return daytime or hours
+
+
+def _max_rain_chance(day: dict[str, Any]) -> int:
+    return max(
+        (int(h.get("chanceofrain", 0) or 0) for h in _daytime_hours(day)),
+        default=0,
+    )
+
+
+def _day_representative_desc(day: dict[str, Any]) -> str:
+    daytime = _daytime_hours(day)
+    noon = next((h for h in daytime if h.get("time") == "1200"), None)
+    pick = noon or (daytime[0] if daytime else None)
+    return _weather_desc_zh(pick.get("weatherCode")) if pick else "未知"
+
 
 @dataclass(frozen=True)
 class LiveContext:
@@ -118,12 +192,60 @@ def should_lookup(text: str) -> bool:
 
 
 def extract_city(text: str, default_city: str) -> str:
-    match = _CITY_PATTERN.search(text or "")
-    if not match:
-        return default_city
-    city = match.group(1).strip()
-    city = _CITY_FILLER.sub("", city)
-    return city or default_city
+    """Best-effort city name from a weather query.
+
+    Anchors at the weather keyword and takes the trailing CJK run of the
+    text to its left, after peeling time words and fillers.  Falls back
+    to *default_city* when no city is named (e.g. "今天天气怎么样").
+    """
+    t = text or ""
+    anchor = WEATHER_KEYWORDS.search(t)
+    prefix = t[: anchor.start()] if anchor else t
+    prev = None
+    while prev != prefix:
+        prev = prefix
+        prefix = _CITY_STRIP.sub("", prefix.rstrip()).rstrip()
+    match = re.search(r"([\u4e00-\u9fa5]{2,6})$", prefix)
+    return match.group(1) if match else default_city
+
+
+def resolve_weather_query(
+    text: str,
+    history: list[dict[str, str]] | None = None,
+) -> str | None:
+    """Resolve a direct weather question or an immediate bounded follow-up."""
+    current = (text or "").strip()
+    if WEATHER_KEYWORDS.search(current):
+        return current
+
+    detail_follow_up = _WEATHER_DETAIL_FOLLOW_UP.fullmatch(current)
+    day_follow_up = _WEATHER_DAY_FOLLOW_UP.fullmatch(current)
+    if not detail_follow_up and not day_follow_up:
+        return None
+
+    previous_user = ""
+    previous_assistant = ""
+    for item in reversed(history or []):
+        role = item.get("role")
+        content = str(item.get("content", "")).strip()
+        if role == "assistant" and not previous_assistant:
+            previous_assistant = content
+        elif role == "user":
+            previous_user = content
+            break
+
+    weather_basis = ""
+    if WEATHER_KEYWORDS.search(previous_user):
+        weather_basis = previous_user
+    elif WEATHER_KEYWORDS.search(previous_assistant):
+        weather_basis = previous_assistant
+    if not weather_basis:
+        return None
+    if detail_follow_up:
+        return weather_basis
+
+    city = extract_city(weather_basis, "")
+    return f"{city}{day_follow_up.group('day')}天气"
 
 
 def _format_clock(now: datetime) -> str:
@@ -216,6 +338,96 @@ def _fetch_web_context(
     )
 
 
+def _fetch_weather(
+    text: str,
+    settings: Settings,
+    client: httpx.Client | None,
+) -> LiveContext | None:
+    """Fetch real-time weather from wttr.in (no API key required).
+
+    Returns None when wttr.in is disabled, unreachable, or the user asks
+    about a past day (wttr.in carries no history); callers fall back to
+    the generic web search.
+    """
+    if settings.weather_provider.strip().lower() != "wttr":
+        return None
+    city = extract_city(text, settings.live_default_city)
+    offset = _resolve_day_offset(text)
+    if offset < 0:  # wttr.in has no historical data
+        return None
+
+    now = datetime.now()
+    cache_key = f"{city}|{offset}|{now.date().isoformat()}"
+    ttl = timedelta(minutes=settings.weather_cache_ttl_minutes)
+    cached = _weather_cache.get(cache_key)
+    if cached is not None and cached[0] > now:
+        data = cached[1]
+    else:
+        base = settings.weather_api_base.rstrip("/")
+        timeout = httpx.Timeout(settings.weather_timeout_seconds, connect=3.0)
+        close_owned = client is None
+        if client is None:
+            client = httpx.Client(timeout=timeout)
+        try:
+            resp = client.get(
+                f"{base}/{city}",
+                params={"format": "j1"},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return None
+        finally:
+            if close_owned and client is not None:
+                client.close()
+
+    days = data.get("weather") or []
+    current = (data.get("current_condition") or [None])[0]
+    if not days:
+        return None
+    day = days[offset] if offset < len(days) else None
+    if day is None:
+        return None
+
+    _weather_cache[cache_key] = (now + ttl, data)
+
+    label = _day_label(offset)
+    mn = day.get("mintempC", "")
+    mx = day.get("maxtempC", "")
+
+    if offset == 0 and current:
+        desc = _weather_desc_zh(current.get("weatherCode"))
+        temp = current.get("temp_C", "")
+        feels = current.get("FeelsLikeC", "")
+        hum = current.get("humidity", "")
+        wind = _kmh_to_beaufort(current.get("windspeedKmph"))
+        parts = [
+            f"{city}{label}实时天气：{desc}，气温{temp}℃（体感{feels}℃），"
+            f"湿度{hum}%，风力{wind}级。今日气温{mn}~{mx}℃。"
+        ]
+    else:
+        desc = _day_representative_desc(day)
+        parts = [f"{city}{label}天气预报：{desc}，气温{mn}~{mx}℃。"]
+
+    rain_chance = _max_rain_chance(day)
+    parts.append(f"白天最高降雨概率{rain_chance}%。")
+    if rain_chance >= 40:
+        parts.append("白天可能有雨，出门记得带把伞。")
+
+    content = "".join(parts)
+    return LiveContext(
+        label="live:weather",
+        section="实时天气",
+        content=content,
+        sources=[{
+            "source": "live:weather",
+            "title": f"实时天气：{city}",
+            "content": content,
+        }],
+    )
+
+
 def fetch_live_context(
     text: str,
     settings: Settings,
@@ -230,6 +442,10 @@ def fetch_live_context(
         return _fetch_web_context(text, settings, client)
     if TIME_KEYWORDS.search(text or ""):
         return _fetch_clock()
+    if WEATHER_KEYWORDS.search(text or ""):
+        weather = _fetch_weather(text, settings, client)
+        if weather is not None:
+            return weather
     return _fetch_web_context(text, settings, client)
 
 

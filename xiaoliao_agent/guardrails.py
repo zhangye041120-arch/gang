@@ -169,4 +169,4 @@ FRAUD_FALLBACK = (
     "建议先和家人确认，遇到自称公检法的可以直接挂断并拨打 110 核实；已经转账请尽快联系银行和警方。"
 )
 SAFETY_FALLBACK = MEDICAL_FALLBACK
-GENERIC_FALLBACK = "我刚才没有把话说明白。我们先慢一点，你可以再告诉我一次现在最困扰你的是什么。"
+GENERIC_FALLBACK = "我刚才没能把这句话接稳。请再说一次，我会接着刚才的话回答。"

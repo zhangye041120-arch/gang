@@ -8,8 +8,21 @@ from xiaoliao_agent.live_context import (
     _target_date_string,
     extract_city,
     fetch_live_context,
+    resolve_weather_query,
     should_lookup,
 )
+
+
+import pytest
+
+from xiaoliao_agent import live_context
+
+
+@pytest.fixture(autouse=True)
+def _clear_weather_cache():
+    live_context._weather_cache.clear()
+    yield
+    live_context._weather_cache.clear()
 
 
 def test_live_fact_questions_route_to_lookup():
@@ -31,6 +44,37 @@ def test_city_extraction_with_and_without_location():
     assert extract_city("北京天气怎么样", settings.live_default_city) == "北京"
     assert extract_city("上海今天热不热", settings.live_default_city) == "上海"
     assert extract_city("今天天气怎么样", settings.live_default_city) == settings.live_default_city
+    assert extract_city("上海明天会下雨吗", settings.live_default_city) == "上海"
+    assert extract_city("法库县今天多少度", settings.live_default_city) == "法库县"
+    assert extract_city("咱们这边天气", settings.live_default_city) == settings.live_default_city
+
+
+@pytest.mark.parametrize("follow_up,expected", [
+    ("具体点", "沈阳今天天气怎么样？"),
+    ("详细点", "沈阳今天天气怎么样？"),
+    ("那明天呢", "沈阳明天天气"),
+])
+def test_resolve_weather_follow_up(follow_up, expected):
+    history = [
+        {"role": "user", "content": "沈阳今天天气怎么样？"},
+        {"role": "assistant", "content": "沈阳今天晴，30度。"},
+    ]
+    assert resolve_weather_query(follow_up, history) == expected
+
+
+def test_resolve_weather_follow_up_requires_weather_history():
+    history = [
+        {"role": "user", "content": "我最近睡不好"},
+        {"role": "assistant", "content": "您想具体说说吗？"},
+    ]
+    assert resolve_weather_query("具体点", history) is None
+
+
+def test_resolve_weather_follow_up_after_proactive_assistant_weather():
+    weather_message = "沈阳今天天气不错，是晴天，气温30度。您打算出门走走吗？"
+    history = [{"role": "assistant", "content": weather_message}]
+
+    assert resolve_weather_query("具体点", history) == weather_message
 
 
 def test_clock_answer_uses_local_time_without_network():
@@ -72,8 +116,40 @@ def test_weather_question_routes_to_web_search():
     assert result.sources[0]["source"] == "live:web"
 
 
+def test_weather_routes_to_realtime_weather_api():
+    # wttr.in returns a JSON payload for format=j1 (no API key needed).
+    def handler(request):
+        return httpx.Response(200, json={
+            "current_condition": [{
+                "temp_C": "26", "FeelsLikeC": "28", "humidity": "70",
+                "windspeedKmph": "11", "weatherCode": "116",
+            }],
+            "weather": [{
+                "mintempC": "22", "maxtempC": "30",
+                "hourly": [{"time": "1200", "weatherCode": "116", "chanceofrain": "10"}],
+            }],
+        })
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    settings = Settings(live_default_city="沈阳")
+    result = fetch_live_context("今天天气怎么样", settings, client=client)
+    client.close()
+    assert result is not None
+    assert result.section == "实时天气"
+    assert result.sources[0]["source"] == "live:weather"
+    assert "多云" in result.content
+    assert "气温26℃" in result.content
+    assert "体感28℃" in result.content
+    assert "湿度70%" in result.content
+    assert "风力2级" in result.content
+    assert "22~30℃" in result.content
+    assert "降雨概率10%" in result.content
+
+
 def test_web_search_unconfigured_returns_none_without_crash():
-    result = fetch_live_context("今天天气怎么样", Settings(web_search_api_key=""), client=None)
+    # Non-weather queries rely on the web search provider; weather itself
+    # now uses the keyless realtime weather API (see test above).
+    result = fetch_live_context("今天有什么新闻", Settings(web_search_api_key=""), client=None)
     assert result is not None
     assert result.label == "live:web-unavailable"
     assert "联网检索暂时不可用" in result.content
