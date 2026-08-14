@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 
 try:
     from dotenv import load_dotenv
@@ -17,6 +18,13 @@ ACTION_WHITELIST = {
     "M5": {"page": "/pages/community/index", "allowed_params": frozenset()},
 }
 ACTION_WHITELIST_VERSION = "prototype-v1-pending-java-confirmation"
+_DEFAULT_QUALITY_HASH_SALT = "xiaoliao-local-quality"
+
+
+class ProductionConfigurationError(RuntimeError):
+    def __init__(self, fields: list[str]):
+        self.fields = tuple(sorted(set(fields)))
+        super().__init__("生产配置不完整或不安全: " + ", ".join(self.fields))
 
 
 def _load_env() -> None:
@@ -36,6 +44,7 @@ def _load_env() -> None:
 
 @dataclass(frozen=True)
 class Settings:
+    app_env: str = "development"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-v4-flash"
@@ -79,13 +88,32 @@ class Settings:
     rerank_timeout_seconds: float = 30.0
     prompt_version: str = "1.7.0"
     action_decline_cooldown_hours: int = 24
-    quality_hash_salt: str = "xiaoliao-local-quality"
+    quality_hash_salt: str = _DEFAULT_QUALITY_HASH_SALT
     api_token: str = ""
     api_debug_token: str = ""
+    api_admin_token: str = ""
+    api_debug_enabled: bool = False
     api_port: int = 8081
     api_test_mode: bool = False
     api_rate_limit_per_minute: int = 60
     api_rate_limit_per_user: int = 20
+    api_trusted_hosts: str = "localhost,127.0.0.1"
+    api_max_request_bytes: int = 262_144
+    api_workers: int = 2
+    api_graceful_shutdown_seconds: int = 90
+    api_keep_alive_seconds: int = 5
+    api_forwarded_allow_ips: str = ""
+    api_metrics_enabled: bool = True
+    redis_url: str = ""
+    redis_key_prefix: str = "xiaoliao"
+    idempotency_ttl_seconds: int = 86_400
+    idempotency_execution_ttl_seconds: int = 300
+    nonce_ttl_seconds: int = 900
+    gateway_hmac_secret: str = ""
+    gateway_clock_skew_seconds: int = 300
+    privacy_hmac_secret: str = ""
+    privacy_hmac_key_version: str = "v1"
+    backup_retention_days: int = 30
     crisis_route: str = "unconfigured"
     crisis_retention_days: int = 365
     crisis_notification_attempts: int = 2
@@ -131,6 +159,7 @@ class Settings:
     def from_env(cls) -> "Settings":
         _load_env()
         return cls(
+            app_env=os.getenv("APP_ENV", "development").strip().lower(),
             deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", cls.deepseek_base_url),
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", cls.deepseek_model),
@@ -174,13 +203,32 @@ class Settings:
             rerank_timeout_seconds=float(os.getenv("RERANK_TIMEOUT_SECONDS", "30")),
             prompt_version=os.getenv("PROMPT_VERSION", "1.7.0"),
             action_decline_cooldown_hours=int(os.getenv("ACTION_DECLINE_COOLDOWN_HOURS", "24")),
-            quality_hash_salt=os.getenv("QUALITY_HASH_SALT", "xiaoliao-local-quality"),
+            quality_hash_salt=os.getenv("QUALITY_HASH_SALT", _DEFAULT_QUALITY_HASH_SALT),
             api_token=os.getenv("API_TOKEN", ""),
             api_debug_token=os.getenv("API_DEBUG_TOKEN", ""),
+            api_admin_token=os.getenv("API_ADMIN_TOKEN", ""),
+            api_debug_enabled=os.getenv("API_DEBUG_ENABLED", "false").strip().lower() == "true",
             api_port=int(os.getenv("API_PORT", "8081")),
             api_test_mode=os.getenv("API_TEST_MODE", "false").strip().lower() == "true",
             api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60")),
             api_rate_limit_per_user=int(os.getenv("API_RATE_LIMIT_PER_USER", "20")),
+            api_trusted_hosts=os.getenv("API_TRUSTED_HOSTS", "localhost,127.0.0.1"),
+            api_max_request_bytes=int(os.getenv("API_MAX_REQUEST_BYTES", "262144")),
+            api_workers=int(os.getenv("API_WORKERS", "2")),
+            api_graceful_shutdown_seconds=int(os.getenv("API_GRACEFUL_SHUTDOWN_SECONDS", "90")),
+            api_keep_alive_seconds=int(os.getenv("API_KEEP_ALIVE_SECONDS", "5")),
+            api_forwarded_allow_ips=os.getenv("API_FORWARDED_ALLOW_IPS", ""),
+            api_metrics_enabled=os.getenv("API_METRICS_ENABLED", "true").strip().lower() == "true",
+            redis_url=os.getenv("REDIS_URL", ""),
+            redis_key_prefix=os.getenv("REDIS_KEY_PREFIX", "xiaoliao"),
+            idempotency_ttl_seconds=int(os.getenv("IDEMPOTENCY_TTL_SECONDS", "86400")),
+            idempotency_execution_ttl_seconds=int(os.getenv("IDEMPOTENCY_EXECUTION_TTL_SECONDS", "300")),
+            nonce_ttl_seconds=int(os.getenv("NONCE_TTL_SECONDS", "900")),
+            gateway_hmac_secret=os.getenv("GATEWAY_HMAC_SECRET", ""),
+            gateway_clock_skew_seconds=int(os.getenv("GATEWAY_CLOCK_SKEW_SECONDS", "300")),
+            privacy_hmac_secret=os.getenv("PRIVACY_HMAC_SECRET", ""),
+            privacy_hmac_key_version=os.getenv("PRIVACY_HMAC_KEY_VERSION", "v1"),
+            backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
             crisis_route=os.getenv("CRISIS_ROUTE", "unconfigured"),
             crisis_retention_days=int(os.getenv("CRISIS_RETENTION_DAYS", "365")),
             crisis_notification_attempts=int(os.getenv("CRISIS_NOTIFICATION_ATTEMPTS", "2")),
@@ -231,3 +279,84 @@ class Settings:
             raise RuntimeError(
                 "缺少模型 API Key: " + ", ".join(missing) + "。请先运行“配置API.bat”。"
             )
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
+    @property
+    def trusted_hosts(self) -> tuple[str, ...]:
+        return tuple(
+            item.strip()
+            for item in self.api_trusted_hosts.split(",")
+            if item.strip()
+        )
+
+    def validate_production(self) -> None:
+        if not self.is_production:
+            return
+
+        invalid: list[str] = []
+        required_values = {
+            "DEEPSEEK_API_KEY": self.deepseek_api_key,
+            "QWEN_API_KEY": self.qwen_api_key,
+            "KNOWLEDGE_DATABASE_URL": self.knowledge_database_url,
+            "REDIS_URL": self.redis_url,
+            "CRISIS_NOTIFICATION_RECIPIENTS": self.crisis_notification_recipients,
+        }
+        invalid.extend(name for name, value in required_values.items() if not str(value).strip())
+
+        strong_secrets = {
+            "API_TOKEN": self.api_token,
+            "GATEWAY_HMAC_SECRET": self.gateway_hmac_secret,
+            "PRIVACY_HMAC_SECRET": self.privacy_hmac_secret,
+            "QUALITY_HASH_SALT": self.quality_hash_salt,
+        }
+        for name, value in strong_secrets.items():
+            if len(value) < 32:
+                invalid.append(name)
+        if self.quality_hash_salt == _DEFAULT_QUALITY_HASH_SALT:
+            invalid.append("QUALITY_HASH_SALT")
+        secret_values = list(strong_secrets.values())
+        if len(set(secret_values)) != len(secret_values):
+            invalid.append("PRODUCTION_SECRETS_MUST_DIFFER")
+
+        if self.api_test_mode:
+            invalid.append("API_TEST_MODE")
+        if self.api_debug_enabled and len(self.api_debug_token) < 32:
+            invalid.append("API_DEBUG_TOKEN")
+        if self.crisis_route.strip().lower() == "unconfigured":
+            invalid.append("CRISIS_ROUTE")
+        if not self.trusted_hosts or "*" in self.trusted_hosts:
+            invalid.append("API_TRUSTED_HOSTS")
+        if not 131_072 <= self.api_max_request_bytes <= 2_097_152:
+            invalid.append("API_MAX_REQUEST_BYTES")
+        if not 30 <= self.gateway_clock_skew_seconds <= 900:
+            invalid.append("GATEWAY_CLOCK_SKEW_SECONDS")
+        if not 2 * self.gateway_clock_skew_seconds <= self.nonce_ttl_seconds <= 86_400:
+            invalid.append("NONCE_TTL_SECONDS")
+        if not 30 <= self.idempotency_execution_ttl_seconds <= 3_600:
+            invalid.append("IDEMPOTENCY_EXECUTION_TTL_SECONDS")
+        if not (
+            2 * self.idempotency_execution_ttl_seconds
+            <= self.idempotency_ttl_seconds
+            <= 604_800
+        ):
+            invalid.append("IDEMPOTENCY_TTL_SECONDS")
+        if not 1 <= self.backup_retention_days <= 365:
+            invalid.append("BACKUP_RETENTION_DAYS")
+        if not 1 <= self.api_workers <= 16:
+            invalid.append("API_WORKERS")
+        if not 10 <= self.api_graceful_shutdown_seconds <= 300:
+            invalid.append("API_GRACEFUL_SHUTDOWN_SECONDS")
+        if not 1 <= self.api_keep_alive_seconds <= 60:
+            invalid.append("API_KEEP_ALIVE_SECONDS")
+        if self.api_forwarded_allow_ips.strip() == "*":
+            invalid.append("API_FORWARDED_ALLOW_IPS")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", self.redis_key_prefix):
+            invalid.append("REDIS_KEY_PREFIX")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", self.privacy_hmac_key_version):
+            invalid.append("PRIVACY_HMAC_KEY_VERSION")
+
+        if invalid:
+            raise ProductionConfigurationError(invalid)

@@ -9,7 +9,9 @@
 | AGENT_REQUEST_INVALID | 422 | 请求不符合合同 | 校验请求字段后重发，不要无限重试 |
 | AGENT_INVALID_IDEMPOTENCY_KEY | 422 | 幂等键格式非法 | 修正为 1-128 位 `[A-Za-z0-9_.:@-]` 后重发 |
 | AGENT_IDEMPOTENCY_CONFLICT | 409 | 同一幂等键复用于不同请求体 | 为新请求生成新键 |
+| AGENT_IDEMPOTENCY_IN_PROGRESS | 409 | 相同幂等请求仍在执行 | 稍后使用相同 Idempotency-Key 重试 |
 | AGENT_RATE_LIMITED | 429 | 调用过频 | 指数退避后重试，或提示用户稍后再试 |
+| AGENT_RUNTIME_STATE_UNAVAILABLE | 503 | Redis 运行时状态不可用 | 不调用模型，退避后使用相同幂等键重试 |
 | AGENT_MODEL_TIMEOUT | 504 | 模型超时 | 可携带相同 Idempotency-Key 重试一次 |
 | AGENT_MODEL_UNAVAILABLE | 502 | 模型或 Agent 依赖不可用 | 稍后重试，或走降级文案 |
 | AGENT_MODEL_NETWORK | 502 | 模型网络不可用 | 稍后重试 |

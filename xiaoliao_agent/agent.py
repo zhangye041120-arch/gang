@@ -49,7 +49,12 @@ from .crisis import CrisisNotifier
 from .quality import InspectionLog, MemoryQualityRepository, PostgresQualityRepository, QualityService
 from .prompts import inspector_messages, main_messages, rewrite_messages
 from .prompts import get_fallback_reply, get_prompt_spec
-from .reminders import MemoryReminderRepository, ReminderService, parse_reminder_request
+from .reminders import (
+    MemoryReminderRepository,
+    PostgresReminderRepository,
+    ReminderService,
+    parse_reminder_request,
+)
 from .api_contract import (
     INSPECTION_ERROR_PATTERNS,
     ActionPayload,
@@ -483,6 +488,8 @@ class XiaoliaoAgent:
     ):
         self.settings = settings or Settings.from_env()
         if self.settings.knowledge_database_url and not _db_reachable(self.settings.knowledge_database_url):
+            if self.settings.is_production:
+                raise RuntimeError("production database is unavailable")
             hidden = self.settings.knowledge_database_url
             if "@" in hidden:
                 hidden = hidden.split("@")[-1]
@@ -561,7 +568,14 @@ class XiaoliaoAgent:
         self.live_context_provider = live_context_provider or (
             lambda text: fetch_live_context(text, self.settings)
         )
-        self.reminder_service = reminder_service or ReminderService(MemoryReminderRepository())
+        if reminder_service is not None:
+            self.reminder_service = reminder_service
+        elif self.settings.knowledge_database_url:
+            self.reminder_service = ReminderService(
+                PostgresReminderRepository(self.settings.knowledge_database_url)
+            )
+        else:
+            self.reminder_service = ReminderService(MemoryReminderRepository())
         self.lesson_repository = lesson_repository or MemoryLessonRepository()
         if crisis_repository is not None:
             self.crisis_repository = crisis_repository

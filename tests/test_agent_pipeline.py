@@ -5,7 +5,7 @@ from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.providers import ModelNetworkError
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.live_context import LiveContext
-from xiaoliao_agent.reminders import ReminderService
+from xiaoliao_agent.reminders import PostgresReminderRepository, ReminderService
 
 
 class FakeMainClient:
@@ -493,6 +493,19 @@ def test_fetch_rag_records_reminder_and_injects_confirmation_context():
     assert "吃药" in combined
     assert any(item["source"] == "reminder:created" for item in sources)
     assert len(service.repository.list_for_user("user-rem")) == 1
+
+
+def test_agent_uses_postgres_reminders_when_database_is_configured(monkeypatch):
+    from xiaoliao_agent import agent as agent_module
+
+    monkeypatch.setattr(agent_module, "_db_reachable", lambda *_args, **_kwargs: True)
+    agent = XiaoliaoAgent(
+        Settings(knowledge_database_url="postgresql://user:pass@db/xiaoliao"),
+        main_client=FakeMainClient(),
+        inspector_client=FakeInspectorClient(),
+    )
+
+    assert isinstance(agent.reminder_service.repository, PostgresReminderRepository)
 
 
 def test_crisis_precheck_runs_before_delivery():

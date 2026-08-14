@@ -33,6 +33,10 @@ from xiaoliao_agent.reminders import (
     DailyCheckinService,
     checkin_policy_from_settings,
 )
+from xiaoliao_agent.migrations import verify_schema
+from xiaoliao_agent.providers import OpenAICompatibleClient
+from xiaoliao_agent.runtime import RuntimeReadiness
+from xiaoliao_agent.runtime_state import RedisRuntimeState, RuntimeStateUnavailable
 from xiaoliao_agent.text_utils import chunk_by_graphemes
 from xiaoliao_agent.user_data import (
     MemoryUserRepository,
@@ -220,6 +224,8 @@ def create_app(
     debug_token: str | None = None,
     test_mode: bool = False,
     user_data_service: Any | None = None,
+    runtime_state: Any | None = None,
+    readiness_service: Any | None = None,
 ) -> FastAPI:
     config = settings or Settings.from_env()
     if api_token is not None:
@@ -227,12 +233,31 @@ def create_app(
     if debug_token is not None:
         config = replace(config, api_debug_token=debug_token)
     effective_test_mode = test_mode or config.api_test_mode
-    factory = agent_factory or (lambda: XiaoliaoAgent(Settings.from_env()))
+    factory = agent_factory or (lambda: XiaoliaoAgent(config))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if config.is_production:
+            if test_mode:
+                raise RuntimeError("production cannot start in test mode")
+            config.validate_production()
         if not effective_test_mode and not config.api_token:
             raise RuntimeError("API_TOKEN 未配置，生产 API 拒绝启动")
+        owned_runtime_state = False
+        selected_runtime_state = runtime_state
+        if config.is_production and selected_runtime_state is None:
+            selected_runtime_state = RedisRuntimeState.from_url(
+                config.redis_url,
+                prefix=config.redis_key_prefix,
+                idempotency_ttl_seconds=config.idempotency_ttl_seconds,
+                execution_ttl_seconds=config.idempotency_execution_ttl_seconds,
+                nonce_ttl_seconds=config.nonce_ttl_seconds,
+            )
+            owned_runtime_state = True
+        if config.is_production:
+            await selected_runtime_state.ping()
+            await run_in_threadpool(verify_schema, config.knowledge_database_url)
+        app.state.runtime_state = selected_runtime_state
         app.state.agent = factory()
         app.state.rate_limiter = SlidingWindowRateLimiter(
             config.api_rate_limit_per_minute,
@@ -251,6 +276,11 @@ def create_app(
                 memory_service=getattr(app.state.agent, "memory_service", None),
             )
         app.state.idempotency = IdempotencyCoordinator()
+        app.state.readiness = readiness_service or RuntimeReadiness(
+            config,
+            lambda: app.state.agent,
+            selected_runtime_state,
+        )
         app.state.checkin_reminder = None
         app.state.checkin_reminder_task = None
         if config.wecom_checkin_reminder_enabled:
@@ -288,6 +318,9 @@ def create_app(
                 await app.state.checkin_reminder_task
             except asyncio.CancelledError:
                 pass
+        if selected_runtime_state is not None and (owned_runtime_state or runtime_state is not None):
+            await selected_runtime_state.aclose()
+        OpenAICompatibleClient.close_all()
 
     app = FastAPI(
         title="小辽 M7 Agent API",
@@ -303,6 +336,7 @@ def create_app(
         422: {"model": ApiError},
         429: {"model": ApiError},
         502: {"model": ApiError},
+        503: {"model": ApiError},
         504: {"model": ApiError},
     }
 
@@ -327,6 +361,70 @@ def create_app(
         response = UTF8JSONResponse(status_code=status_code, content=body)
         response.headers["X-Request-ID"] = rid
         return response
+
+    async def allow_request(principal: str, user_id: str) -> bool:
+        state = app.state.runtime_state
+        if state is None:
+            return app.state.rate_limiter.allow(principal, user_id)
+        try:
+            return await state.allow_rate(
+                principal,
+                user_id,
+                per_minute=config.api_rate_limit_per_minute,
+                per_user=config.api_rate_limit_per_user,
+            )
+        except RuntimeStateUnavailable as exc:
+            raise ApiContractError(503, "AGENT_RUNTIME_STATE_UNAVAILABLE") from exc
+
+    async def claim_idempotency(
+        principal: str,
+        key: str,
+        request_fingerprint: str,
+    ) -> tuple[str, tuple[int, dict[str, Any]] | None, str]:
+        state = app.state.runtime_state
+        if state is None:
+            decision, cached = await app.state.idempotency.claim(
+                principal,
+                key,
+                request_fingerprint,
+            )
+            return decision, cached, ""
+        try:
+            claim = await state.claim_idempotency(
+                principal,
+                key,
+                request_fingerprint,
+            )
+        except RuntimeStateUnavailable as exc:
+            raise ApiContractError(503, "AGENT_RUNTIME_STATE_UNAVAILABLE") from exc
+        cached = None
+        if claim.decision == "cached":
+            cached = (claim.status_code or 200, claim.response or {})
+        return claim.decision, cached, claim.execution_token
+
+    async def finish_idempotency(
+        principal: str,
+        key: str,
+        execution_token: str,
+        status_code: int,
+        body: dict[str, Any],
+    ) -> None:
+        state = app.state.runtime_state
+        if state is None:
+            await app.state.idempotency.finish(principal, key, status_code, body)
+            return
+        try:
+            completed = await state.finish_idempotency(
+                principal,
+                key,
+                execution_token,
+                status_code,
+                body,
+            )
+        except RuntimeStateUnavailable as exc:
+            raise ApiContractError(503, "AGENT_RUNTIME_STATE_UNAVAILABLE") from exc
+        if not completed:
+            raise ApiContractError(503, "AGENT_RUNTIME_STATE_UNAVAILABLE")
 
     def _stream_response(body: dict[str, Any], rid: str) -> StreamingResponse:
         async def events():
@@ -364,15 +462,22 @@ def create_app(
         rid = request_id(request)
         return json_response(422, error_body("AGENT_REQUEST_INVALID", rid), rid)
 
-    @app.get("/health")
-    async def health() -> dict[str, Any]:
-        agent: XiaoliaoAgent = app.state.agent
-        return {
-            "status": "ok",
-            "main_model": agent.settings.deepseek_model,
-            "inspector_model": agent.settings.qwen_model,
-            "knowledge_chunks": len(agent.kb.chunks),
-        }
+    @app.get("/health/live")
+    async def health_live() -> dict[str, str]:
+        return {"status": "alive"}
+
+    @app.get("/health/ready")
+    async def health_ready(request: Request):
+        result = await app.state.readiness.check()
+        return json_response(
+            200 if result.ready else 503,
+            {"status": "ready" if result.ready else "not_ready"},
+            request_id(request),
+        )
+
+    @app.get("/health", deprecated=True)
+    async def health() -> dict[str, str]:
+        return {"status": "alive"}
 
     @app.post(
         "/chat",
@@ -435,17 +540,22 @@ def create_app(
         rid = request_id(request)
         if payload.debug and not is_debug:
             raise ApiContractError(403, "AGENT_DEBUG_FORBIDDEN")
-        if not app.state.rate_limiter.allow(principal, payload.user_id):
+        if not await allow_request(principal, payload.user_id):
             return json_response(429, error_body("AGENT_RATE_LIMITED", rid), rid)
         history = [item.model_dump() for item in payload.conversation_history]
         idem = request.headers.get("idempotency-key", "")
         executing = False
+        execution_token = ""
         if idem:
             if len(idem) > 128 or not fullmatch(r"[A-Za-z0-9_.:@-]+", idem):
                 raise ApiContractError(422, "AGENT_INVALID_IDEMPOTENCY_KEY")
-            state, cached = await app.state.idempotency.claim(principal, idem, fingerprint(payload))
+            state, cached, execution_token = await claim_idempotency(
+                principal, idem, fingerprint(payload)
+            )
             if state == "conflict":
                 raise ApiContractError(409, "AGENT_IDEMPOTENCY_CONFLICT")
+            if state == "in_progress":
+                raise ApiContractError(409, "AGENT_IDEMPOTENCY_IN_PROGRESS")
             if state == "cached":
                 status, cached_body = cached
                 return json_response(status, cached_body, rid)
@@ -465,17 +575,17 @@ def create_app(
         except Exception:
             body = error_body("AGENT_MODEL_UNAVAILABLE", rid)
             if executing:
-                await app.state.idempotency.finish(principal, idem, 502, body)
+                await finish_idempotency(principal, idem, execution_token, 502, body)
             return json_response(502, body, rid)
         if result.error_code == "AGENT_MODEL_TIMEOUT":
             body = error_body(result.error_code, rid)
             if executing:
-                await app.state.idempotency.finish(principal, idem, 504, body)
+                await finish_idempotency(principal, idem, execution_token, 504, body)
             return json_response(504, body, rid)
         if result.error_code and result.error_code != "action_policy_violation":
             body = error_body(result.error_code, rid)
             if executing:
-                await app.state.idempotency.finish(principal, idem, 502, body)
+                await finish_idempotency(principal, idem, execution_token, 502, body)
             return json_response(502, body, rid)
         debug_payload = (
             V1DebugInfo(inspection=inspection_payload(result), sources=result.sources)
@@ -504,7 +614,9 @@ def create_app(
             request_id=rid,
         )
         if executing:
-            await app.state.idempotency.finish(principal, idem, 200, response_body)
+            await finish_idempotency(
+                principal, idem, execution_token, 200, response_body
+            )
         return json_response(200, response_body, rid)
 
     @app.post("/v1/chat/stream", responses=error_responses)
@@ -517,18 +629,23 @@ def create_app(
         rid = request_id(request)
         if payload.debug and not is_debug:
             raise ApiContractError(403, "AGENT_DEBUG_FORBIDDEN")
-        if not app.state.rate_limiter.allow(principal, payload.user_id):
+        if not await allow_request(principal, payload.user_id):
             return json_response(429, error_body("AGENT_RATE_LIMITED", rid), rid)
 
         history = [item.model_dump() for item in payload.conversation_history]
         idem = request.headers.get("idempotency-key", "")
         executing = False
+        execution_token = ""
         if idem:
             if len(idem) > 128 or not fullmatch(r"[A-Za-z0-9_.:@-]+", idem):
                 raise ApiContractError(422, "AGENT_INVALID_IDEMPOTENCY_KEY")
-            state, cached = await app.state.idempotency.claim(principal, idem, fingerprint(payload))
+            state, cached, execution_token = await claim_idempotency(
+                principal, idem, fingerprint(payload)
+            )
             if state == "conflict":
                 raise ApiContractError(409, "AGENT_IDEMPOTENCY_CONFLICT")
+            if state == "in_progress":
+                raise ApiContractError(409, "AGENT_IDEMPOTENCY_IN_PROGRESS")
             if state == "cached":
                 status, cached_body = cached
                 if status != 200:
@@ -580,7 +697,12 @@ def create_app(
             except Exception:
                 body = error_body("AGENT_MODEL_UNAVAILABLE", rid)
                 if executing:
-                    await app.state.idempotency.finish(principal, idem, 502, body)
+                    try:
+                        await finish_idempotency(
+                            principal, idem, execution_token, 502, body
+                        )
+                    except ApiContractError:
+                        body = error_body("AGENT_RUNTIME_STATE_UNAVAILABLE", rid)
                 yield "event: error\n" + f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
                 return
 
@@ -605,7 +727,14 @@ def create_app(
                 request_id=rid,
             )
             if executing:
-                await app.state.idempotency.finish(principal, idem, 200, response_body)
+                try:
+                    await finish_idempotency(
+                        principal, idem, execution_token, 200, response_body
+                    )
+                except ApiContractError:
+                    body = error_body("AGENT_RUNTIME_STATE_UNAVAILABLE", rid)
+                    yield "event: error\n" + f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+                    return
             yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(

@@ -105,6 +105,8 @@ ERROR_CODES: dict[str, str] = {
     "AGENT_INVALID_IDEMPOTENCY_KEY": "幂等键格式非法",
     "AGENT_IDEMPOTENCY_CONFLICT": "幂等键复用于不同请求体",
     "AGENT_RATE_LIMITED": "调用过频",
+    "AGENT_RUNTIME_STATE_UNAVAILABLE": "运行时状态服务不可用",
+    "AGENT_IDEMPOTENCY_IN_PROGRESS": "相同幂等请求正在执行",
     "AGENT_MODEL_TIMEOUT": "模型超时",
     "AGENT_MODEL_UNAVAILABLE": "模型或 Agent 依赖不可用",
     "AGENT_MODEL_NETWORK": "模型网络不可用",

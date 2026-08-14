@@ -13,6 +13,7 @@ import hashlib
 import re
 import threading
 import uuid
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 
@@ -60,6 +61,19 @@ class Reminder:
     source_request_id: str = ""
 
 
+class ReminderRepository(Protocol):
+    def list_for_user(self, user_id: str) -> list[Reminder]: ...
+
+    def create_if_absent(
+        self,
+        reminder: Reminder,
+        *,
+        since: datetime,
+    ) -> tuple[Reminder, bool]: ...
+
+    def delete_for_user(self, user_id: str) -> int: ...
+
+
 class MemoryReminderRepository:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -73,6 +87,122 @@ class MemoryReminderRepository:
         with self._lock:
             self._items.setdefault(reminder.user_id, []).append(reminder)
         return reminder
+
+    def create_if_absent(
+        self,
+        reminder: Reminder,
+        *,
+        since: datetime,
+    ) -> tuple[Reminder, bool]:
+        with self._lock:
+            existing = next(
+                (
+                    item
+                    for item in self._items.get(reminder.user_id, [])
+                    if item.fingerprint == reminder.fingerprint
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing, False
+            self._items.setdefault(reminder.user_id, []).append(reminder)
+            return reminder, True
+
+    def delete_for_user(self, user_id: str) -> int:
+        with self._lock:
+            return len(self._items.pop(user_id, []))
+
+
+class PostgresReminderRepository:
+    def __init__(self, database_url: str):
+        if not database_url:
+            raise ValueError("database URL is required")
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("psycopg is required") from exc
+        self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+
+    @staticmethod
+    def _from_row(row) -> Reminder:
+        return Reminder(*row)
+
+    def list_for_user(self, user_id: str) -> list[Reminder]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT reminder_id, user_id, content, due_at, recurring,
+                       created_at, fingerprint, source_request_id
+                FROM ai_reminders
+                WHERE user_id=%s AND status='active'
+                ORDER BY created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def create_if_absent(
+        self,
+        reminder: Reminder,
+        *,
+        since: datetime,
+    ) -> tuple[Reminder, bool]:
+        lock_key = f"reminder:{reminder.user_id}:{reminder.fingerprint}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO ai_users
+                    (user_id, nickname, birth_year, status, created_at, updated_at)
+                VALUES (%s, '', NULL, 'active', now(), now())
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (reminder.user_id,),
+            )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (lock_key,),
+            )
+            row = connection.execute(
+                """
+                SELECT reminder_id, user_id, content, due_at, recurring,
+                       created_at, fingerprint, source_request_id
+                FROM ai_reminders
+                WHERE user_id=%s AND fingerprint=%s
+                LIMIT 1
+                """,
+                (reminder.user_id, reminder.fingerprint),
+            ).fetchone()
+            if row is not None:
+                return self._from_row(row), False
+            row = connection.execute(
+                """
+                INSERT INTO ai_reminders
+                    (reminder_id, user_id, content, due_at, recurring, created_at,
+                     fingerprint, source_request_id, status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active')
+                RETURNING reminder_id, user_id, content, due_at, recurring,
+                          created_at, fingerprint, source_request_id
+                """,
+                (
+                    reminder.reminder_id,
+                    reminder.user_id,
+                    reminder.content,
+                    reminder.due_at,
+                    reminder.recurring,
+                    reminder.created_at,
+                    reminder.fingerprint,
+                    reminder.source_request_id,
+                ),
+            ).fetchone()
+        return self._from_row(row), True
+
+    def delete_for_user(self, user_id: str) -> int:
+        with self._connect() as connection:
+            result = connection.execute(
+                "DELETE FROM ai_reminders WHERE user_id=%s",
+                (user_id,),
+            )
+            return result.rowcount
 
 
 def _clean_content(text: str, topic: str) -> str:
@@ -142,7 +272,7 @@ def parse_reminder_request(text: str, now: datetime | None = None) -> ReminderRe
 
 
 class ReminderService:
-    def __init__(self, repository: MemoryReminderRepository | None = None) -> None:
+    def __init__(self, repository: ReminderRepository | None = None) -> None:
         self.repository = repository or MemoryReminderRepository()
 
     def create(
@@ -159,13 +289,6 @@ class ReminderService:
         """
         reference_now = (now or datetime.now(BEIJING_TZ)).replace(tzinfo=BEIJING_TZ)
         fingerprint = request.fingerprint()
-        existing = [
-            item for item in self.repository.list_for_user(user_id)
-            if item.fingerprint == fingerprint
-            and item.due_at >= reference_now - timedelta(hours=24)
-        ]
-        if existing:
-            return existing[0], False
         reminder = Reminder(
             reminder_id="rem-" + uuid.uuid4().hex[:16],
             user_id=user_id,
@@ -176,8 +299,10 @@ class ReminderService:
             fingerprint=fingerprint,
             source_request_id=source_request_id,
         )
-        self.repository.add(reminder)
-        return reminder, True
+        return self.repository.create_if_absent(
+            reminder,
+            since=reference_now - timedelta(hours=24),
+        )
 
 
 from dataclasses import dataclass, field

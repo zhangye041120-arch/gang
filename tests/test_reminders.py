@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from xiaoliao_agent.reminders import (
     MemoryReminderRepository,
+    PostgresReminderRepository,
     ReminderService,
     parse_reminder_request,
 )
@@ -58,3 +59,26 @@ def test_service_is_idempotent_for_same_request_within_window():
     assert created_second is False
     assert first.reminder_id == second.reminder_id
     assert len(repository.list_for_user("user-1")) == 1
+
+
+def test_memory_repository_atomically_reports_duplicate():
+    repository = MemoryReminderRepository()
+    service = ReminderService(repository)
+    request = parse_reminder_request("每天上午8点提醒我吃药", NOW)
+
+    first, first_created = service.create("user-atomic", request, now=NOW)
+    second, second_created = repository.create_if_absent(
+        first,
+        since=NOW - timedelta(hours=24),
+    )
+
+    assert first_created is True
+    assert second_created is False
+    assert second.reminder_id == first.reminder_id
+
+
+def test_postgres_reminder_repository_requires_database_url():
+    import pytest
+
+    with pytest.raises(ValueError, match="database URL"):
+        PostgresReminderRepository("")
