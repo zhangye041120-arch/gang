@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62
+        env:
+          POSTGRES_DB: xiaoliao
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d xiaoliao"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      KNOWLEDGE_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/xiaoliao
+      PRIVACY_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/xiaoliao
+      MIGRATION_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/xiaoliao
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install locked development dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+      - name: Migrate and seed knowledge
+        run: |
+          python migrate_database.py
+          python import_knowledge.py
+      - name: Tests
+        run: python -m pytest -q --tb=short
+      - name: Compile
+        run: python -m compileall -q xiaoliao_agent api_server.py scripts
+      - name: Offline agent gate
+        run: python run_eval_suite.py --offline --gate --out /tmp/eval-runs
+      - name: Offline RAG gate
+        run: python run_rag_eval.py --offline --gate --output /tmp/rag-runs
+      - name: Frozen OpenAPI
+        run: python generate_openapi.py --check
+      - name: Dependency audit
+        run: pip-audit --no-deps --disable-pip -r requirements.txt
+      - name: Secret scan
+        run: git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
+      - name: Compose config
+        run: docker compose config -q
+      - name: Dockerfile check
+        run: docker build --check .
+      - name: Container build
+        run: docker build --tag xiaoliao-agent:ci .

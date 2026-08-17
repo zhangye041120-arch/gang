@@ -213,3 +213,49 @@ python 运行/run_checkin_reminder.py --once
 - 检测到自伤、自杀、极度绝望等信号时，走固定危机话术，不使用普通生成回复。
 - 正式运行不提供 Mock/离线模式；缺少任意 API Key 时直接拒绝启动。
 - 知识库原文来自项目资料，正式上线前需要完成版权、隐私、热线和人工转介审核。
+## 生产容器
+
+生产 Compose 包含 `postgres`、`redis`、一次性 `migrate`、多 worker
+`agent-api` 和唯一 `checkin-worker`。Python API 不发布宿主机端口，由受信 Java
+网关通过内部网络访问。
+
+```bash
+docker compose config -q
+docker compose build
+docker compose up -d agent-api checkin-worker
+docker compose exec agent-api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8081/health/ready').read())"
+```
+
+生产前从 `.env.example` 建立部署环境配置。`API_TOKEN`、网关 HMAC、隐私 HMAC、
+质量盐和数据库密码必须各不相同；不要提交任何 `.env` 文件。HMAC 轮换时提升
+`PRIVACY_HMAC_KEY_VERSION`，并把仍在读取期内的旧密钥放入
+`PRIVACY_HMAC_PREVIOUS_KEYS`。
+
+运行时指标位于需 service token 的 `/metrics`；日志为 JSON，禁止记录请求正文、
+用户 ID、记忆内容或 token。
+
+### 发布检查
+
+```bash
+python scripts/verify_release.py --check
+python scripts/verify_release.py --gate
+```
+
+`--gate` 只验证可自动化项目。真实模型预算、7 天灰度、企微闭环、危机演练和
+Java 合同仍须负责人提供外部证据。
+
+### 加密备份与恢复演练
+
+备份凭据只从 `KNOWLEDGE_DATABASE_URL` 读取；目标目录必须是专用目录，最终制品
+使用 age 加密并原子落盘。
+
+```bash
+python scripts/backup_database.py --destination /secure/backups --age-recipient age1...
+AGE_IDENTITY_FILE=/secure/keys/backup.agekey \
+python scripts/restore_database.py \
+  --backup /secure/backups/xiaoliao-20260817T000000Z.dump.age \
+  --target-database xiaoliao_restore_drill \
+  --confirm-target xiaoliao_restore_drill
+```
+
+恢复脚本拒绝覆盖源数据库；演练只能指向一次性隔离数据库。

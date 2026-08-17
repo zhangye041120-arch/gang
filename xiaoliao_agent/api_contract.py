@@ -206,6 +206,7 @@ ERROR_CODES: dict[str, str] = {
     "AGENT_ACTION_EVENT_INVALID": "行动事件状态或推荐不匹配",
     "AGENT_MEMORY_UNAVAILABLE": "记忆存储暂不可用",
     "AGENT_SUBJECT_DELETED": "用户数据已删除",
+    "AGENT_REQUEST_TOO_LARGE": "请求体超过服务上限",
     "AGENT_TTS_DISABLED": "语音合成未开启",
 }
 

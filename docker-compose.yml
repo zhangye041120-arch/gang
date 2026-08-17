@@ -1,22 +1,128 @@
+x-agent-service: &agent-service
+  build:
+    context: .
+  image: xiaoliao-agent:${IMAGE_TAG:-local}
+  restart: unless-stopped
+  environment: &agent-environment
+    APP_ENV: production
+    DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+    QWEN_API_KEY: ${QWEN_API_KEY}
+    KNOWLEDGE_DATABASE_URL: postgresql://xiaoliao@postgres:5432/xiaoliao
+    PGPASSWORD: ${POSTGRES_PASSWORD}
+    REDIS_URL: redis://redis:6379/0
+    REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-xiaoliao}
+    API_TOKEN: ${API_TOKEN}
+    API_DEBUG_TOKEN: ${API_DEBUG_TOKEN:-}
+    API_ADMIN_TOKEN: ${API_ADMIN_TOKEN:-}
+    API_TRUSTED_HOSTS: ${API_TRUSTED_HOSTS:-agent-api,localhost,127.0.0.1}
+    API_FORWARDED_ALLOW_IPS: ${API_FORWARDED_ALLOW_IPS:-127.0.0.1}
+    API_WORKERS: ${API_WORKERS:-2}
+    GATEWAY_HMAC_SECRET: ${GATEWAY_HMAC_SECRET}
+    PRIVACY_HMAC_SECRET: ${PRIVACY_HMAC_SECRET}
+    PRIVACY_HMAC_KEY_VERSION: ${PRIVACY_HMAC_KEY_VERSION:-v1}
+    PRIVACY_HMAC_PREVIOUS_KEYS: ${PRIVACY_HMAC_PREVIOUS_KEYS:-{}}
+    QUALITY_HASH_SALT: ${QUALITY_HASH_SALT}
+    CRISIS_ROUTE: ${CRISIS_ROUTE}
+    CRISIS_NOTIFICATION_RECIPIENTS: ${CRISIS_NOTIFICATION_RECIPIENTS}
+    WECOM_CORP_ID: ${WECOM_CORP_ID:-}
+    WECOM_AGENT_ID: ${WECOM_AGENT_ID:-}
+    WECOM_AGENT_SECRET: ${WECOM_AGENT_SECRET:-}
+    WECOM_CHECKIN_GROUP_WEBHOOK: ${WECOM_CHECKIN_GROUP_WEBHOOK:-}
+    WECOM_CHECKIN_GROUP_WEBHOOK_SECRET: ${WECOM_CHECKIN_GROUP_WEBHOOK_SECRET:-}
+    WECOM_CHECKIN_GROUP_TIMES: ${WECOM_CHECKIN_GROUP_TIMES:-09:00}
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - backend
+
 services:
-  knowledge-db:
-    image: pgvector/pgvector:pg18
-    container_name: xiaoliao-knowledge-db
+  postgres:
+    image: pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62
     restart: unless-stopped
-    env_file:
-      - .env.docker
     environment:
       POSTGRES_DB: xiaoliao
       POSTGRES_USER: xiaoliao
-    ports:
-      - "127.0.0.1:55432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - xiaoliao_pgdata:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U xiaoliao -d xiaoliao"]
       interval: 5s
       timeout: 5s
+      retries: 20
+    networks:
+      - backend
+
+  redis:
+    image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - backend
+
+  migrate:
+    <<: *agent-service
+    restart: "no"
+    command: ["python", "migrate_database.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agent-api:
+    <<: *agent-service
+    command: ["python", "run_api.py"]
+    environment:
+      <<: *agent-environment
+      WECOM_CHECKIN_REMINDER_ENABLED: "false"
+    expose:
+      - "8081"
+    networks:
+      - backend
+      - egress
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
       retries: 12
+      start_period: 20s
+
+  checkin-worker:
+    <<: *agent-service
+    command: ["python", "checkin_worker.py"]
+    environment:
+      <<: *agent-environment
+      WECOM_CHECKIN_REMINDER_ENABLED: "true"
+    networks:
+      - backend
+      - egress
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
 volumes:
-  xiaoliao_pgdata:
+  postgres_data:
+  redis_data:
+
+networks:
+  backend:
+    internal: true
+  egress:

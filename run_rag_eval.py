@@ -221,6 +221,7 @@ def main() -> int:
     parser.add_argument("--approved-by", default="", help="required for --real")
     parser.add_argument("--output", default=str(PROJECT_ROOT / "rag_runs"))
     parser.add_argument("--run-id", default="")
+    parser.add_argument("--gate", action="store_true", help="fail when any RAG case fails")
     args = parser.parse_args()
 
     if not args.offline and not args.real:
@@ -244,6 +245,9 @@ def main() -> int:
     print_report(report)
     results_path = save_rag_run(report, output_root=args.output, run_id=args.run_id or None)
     print(f"\n结果已保存: {results_path}")
+    if args.gate and report.failed:
+        print(f"RAG 发布门禁失败：{report.failed} 个用例未通过", file=sys.stderr)
+        return 1
     return 0
 
 

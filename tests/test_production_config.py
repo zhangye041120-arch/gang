@@ -14,7 +14,7 @@ def production_settings(**overrides):
         "gateway_hmac_secret": "g" * 48,
         "privacy_hmac_secret": "p" * 48,
         "quality_hash_salt": "q" * 48,
-        "api_trusted_hosts": "agent-api,localhost",
+        "api_trusted_hosts": "agent-api,localhost,testserver",
         "crisis_route": "wecom-on-call",
         "crisis_notification_recipients": "on-call-user",
     }

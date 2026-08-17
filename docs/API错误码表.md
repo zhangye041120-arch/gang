@@ -7,6 +7,7 @@
 | AGENT_UNAUTHORIZED | 401 | Token 缺失或无效 | 停止重试，重新获取 Token |
 | AGENT_DEBUG_FORBIDDEN | 403 | 普通调用方请求调试数据 | 不展示调试字段，按正常业务继续 |
 | AGENT_REQUEST_INVALID | 422 | 请求不符合合同 | 校验请求字段后重发，不要无限重试 |
+| AGENT_REQUEST_TOO_LARGE | 413 | 请求体超过生产上限 | 缩小请求体；不要原样自动重试 |
 | AGENT_INVALID_IDEMPOTENCY_KEY | 422 | 幂等键格式非法 | 修正为 1-128 位 `[A-Za-z0-9_.:@-]` 后重发 |
 | AGENT_IDEMPOTENCY_CONFLICT | 409 | 同一幂等键复用于不同请求体 | 为新请求生成新键 |
 | AGENT_IDEMPOTENCY_IN_PROGRESS | 409 | 相同幂等请求仍在执行 | 稍后使用相同 Idempotency-Key 重试 |

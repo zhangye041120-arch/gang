@@ -18,6 +18,7 @@ from xiaoliao_agent.evaluation import (
     assert_result,
     compare_reports,
     compute_metrics,
+    evaluate_release_gate,
     load_eval_suite,
     require_real_approval,
 )
@@ -335,6 +336,7 @@ def main() -> int:
     parser.add_argument("--token", default="")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--compare", nargs=2, metavar=("RUN_A", "RUN_B"))
+    parser.add_argument("--gate", action="store_true", help="fail unless release thresholds pass")
     args = parser.parse_args()
 
     if args.compare:
@@ -385,6 +387,13 @@ def main() -> int:
     except Exception as exc:
         print(f"评估中断：{exc}", file=sys.stderr)
         return 1
+    if args.gate:
+        metrics = json.loads(manager.metrics_path.read_text(encoding="utf-8"))
+        gates = evaluate_release_gate(metrics)
+        failed = [name for name, passed in gates.items() if not passed]
+        if failed:
+            print("发布门禁失败：" + ", ".join(failed), file=sys.stderr)
+            return 1
     print(f"完成：{manager.run_dir}")
     return 0
 

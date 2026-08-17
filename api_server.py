@@ -4,7 +4,6 @@ from dataclasses import replace
 from hashlib import sha256
 import hmac
 import json
-import logging
 import uuid
 from time import monotonic
 from re import fullmatch
@@ -17,6 +16,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.datastructures import MutableHeaders
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from xiaoliao_agent import Settings, XiaoliaoAgent
 from xiaoliao_agent.agent import to_java_intent
@@ -42,10 +44,6 @@ from xiaoliao_agent.api_contract import (
     error_body,
     fingerprint,
 )
-from xiaoliao_agent.reminders import (
-    DailyCheckinService,
-    checkin_policy_from_settings,
-)
 from xiaoliao_agent.actions import (
     ActionContractError,
     ActionEvent,
@@ -53,6 +51,11 @@ from xiaoliao_agent.actions import (
     ActionMemoryUnavailable,
 )
 from xiaoliao_agent.migrations import verify_schema
+from xiaoliao_agent.observability import (
+    ObservabilityMiddleware,
+    Telemetry,
+    configure_logging,
+)
 from xiaoliao_agent.providers import OpenAICompatibleClient
 from xiaoliao_agent.runtime import RuntimeReadiness
 from xiaoliao_agent.runtime_state import RedisRuntimeState, RuntimeStateUnavailable
@@ -66,8 +69,6 @@ from xiaoliao_agent.user_data import (
 
 
 Intent = Literal["chat", "checkin", "game", "exercise", "assessment", "community"]
-
-logger = logging.getLogger("xiaoliao.api")
 
 bearer_auth = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
 
@@ -170,6 +171,92 @@ class UTF8JSONResponse(JSONResponse):
     media_type = "application/json; charset=utf-8"
 
 
+def _scope_request_id(scope: dict[str, Any]) -> str:
+    for name, value in scope.get("headers", []):
+        if name.lower() == b"x-request-id":
+            candidate = value.decode("ascii", errors="ignore")
+            if fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", candidate):
+                return candidate
+    return uuid.uuid4().hex
+
+
+class RequestSizeLimitMiddleware:
+    def __init__(self, app: Any, *, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") not in {
+            "POST", "PUT", "PATCH", "DELETE"
+        }:
+            await self.app(scope, receive, send)
+            return
+        content_length = next((
+            value for name, value in scope.get("headers", [])
+            if name.lower() == b"content-length"
+        ), b"")
+        try:
+            declared_length = int(content_length) if content_length else None
+        except ValueError:
+            declared_length = self.max_bytes + 1
+        if declared_length is not None and declared_length > self.max_bytes:
+            await self._reject(scope, receive, send)
+            return
+
+        messages = []
+        total = 0
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] == "http.disconnect":
+                break
+            total += len(message.get("body", b""))
+            if total > self.max_bytes:
+                await self._reject(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        async def replay():
+            if messages:
+                return messages.pop(0)
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self.app(scope, replay, send)
+
+    @staticmethod
+    async def _reject(scope, receive, send):
+        rid = _scope_request_id(scope)
+        response = UTF8JSONResponse(
+            status_code=413,
+            content=error_body("AGENT_REQUEST_TOO_LARGE", rid),
+            headers={"X-Request-ID": rid},
+        )
+        await response(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app: Any):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "no-referrer"
+                headers["Content-Security-Policy"] = "default-src 'none'"
+                headers["Strict-Transport-Security"] = (
+                    "max-age=31536000; includeSubDomains"
+                )
+                if scope.get("path", "").startswith(("/v1/", "/chat")):
+                    headers["Cache-Control"] = "no-store"
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 class IdempotencyCoordinator:
     """Single-process coordination so retries never re-enter the Agent."""
 
@@ -257,6 +344,7 @@ def create_app(
     user_data_service: Any | None = None,
     runtime_state: Any | None = None,
     readiness_service: Any | None = None,
+    telemetry: Telemetry | None = None,
 ) -> FastAPI:
     config = settings or Settings.from_env()
     if api_token is not None:
@@ -268,6 +356,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if config.is_production:
+            configure_logging(config.app_env)
         if config.is_production:
             if test_mode:
                 raise RuntimeError("production cannot start in test mode")
@@ -368,41 +458,7 @@ def create_app(
         )
         app.state.checkin_reminder = None
         app.state.checkin_reminder_task = None
-        if config.wecom_checkin_reminder_enabled:
-            checkin_policy = checkin_policy_from_settings(config)
-            if checkin_policy.user_schedules and not (
-                config.wecom_corp_id
-                and config.wecom_agent_id
-                and config.wecom_agent_secret
-            ):
-                raise RuntimeError(
-                    "用户级签到提醒需要 WECOM_CORP_ID / WECOM_AGENT_ID / WECOM_AGENT_SECRET"
-                )
-            app.state.checkin_reminder = DailyCheckinService(
-                checkin_policy
-            )
-
-            async def checkin_loop() -> None:
-                while True:
-                    try:
-                        events = await run_in_threadpool(
-                            app.state.checkin_reminder.run_due
-                        )
-                        for event in events:
-                            if event.get("status") in {"sent", "failed"}:
-                                logger.warning("checkin reminder %s", event)
-                    except Exception:
-                        logger.exception("checkin reminder loop error")
-                    await asyncio.sleep(60)
-
-            app.state.checkin_reminder_task = asyncio.create_task(checkin_loop())
         yield
-        if app.state.checkin_reminder_task is not None:
-            app.state.checkin_reminder_task.cancel()
-            try:
-                await app.state.checkin_reminder_task
-            except asyncio.CancelledError:
-                pass
         if selected_runtime_state is not None and (owned_runtime_state or runtime_state is not None):
             await selected_runtime_state.aclose()
         OpenAICompatibleClient.close_all()
@@ -413,6 +469,24 @@ def create_app(
         version="1.1.0",
         default_response_class=UTF8JSONResponse,
         lifespan=lifespan,
+        docs_url=None if config.is_production else "/docs",
+        redoc_url=None if config.is_production else "/redoc",
+        openapi_url=None if config.is_production else "/openapi.json",
+    )
+    app.state.telemetry = telemetry or Telemetry()
+    if config.is_production:
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=list(config.trusted_hosts),
+        )
+        app.add_middleware(
+            RequestSizeLimitMiddleware,
+            max_bytes=config.api_max_request_bytes,
+        )
+        app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(
+        ObservabilityMiddleware,
+        telemetry=app.state.telemetry,
     )
 
     error_responses = {
@@ -487,6 +561,26 @@ def create_app(
         response.headers["X-Request-ID"] = rid
         return response
 
+    def increment_metric(metric: str, **labels: str) -> None:
+        try:
+            app.state.telemetry.metrics.increment(metric, **labels)
+        except Exception:
+            pass
+
+    def observe_agent_result(result: Any) -> None:
+        total_ms = getattr(result, "stage_latencies", {}).get("total_ms")
+        if isinstance(total_ms, (int, float)):
+            app.state.telemetry.metrics.observe_agent_stage(
+                "total", float(total_ms) / 1000
+            )
+        error_code = getattr(result, "error_code", None)
+        if error_code:
+            increment_metric(
+                "model_errors", model_role="main", error_code=str(error_code)
+            )
+        if getattr(result, "crisis_detected", False):
+            increment_metric("crisis_events", outcome="detected")
+
     async def allow_request(principal: str, user_id: str) -> bool:
         state = app.state.runtime_state
         if state is None:
@@ -515,6 +609,7 @@ def create_app(
                 key,
                 request_fingerprint,
             )
+            increment_metric("idempotency", outcome=decision)
             return decision, cached, ""
         try:
             claim = await state.claim_idempotency(
@@ -529,6 +624,7 @@ def create_app(
         cached = None
         if claim.decision == "cached":
             cached = (claim.status_code or 200, claim.response or {})
+        increment_metric("idempotency", outcome=claim.decision)
         return claim.decision, cached, claim.execution_token
 
     async def finish_idempotency(
@@ -607,6 +703,19 @@ def create_app(
     @app.get("/health", deprecated=True)
     async def health() -> dict[str, str]:
         return {"status": "alive"}
+
+    if config.api_metrics_enabled:
+        @app.get("/metrics", include_in_schema=False)
+        async def prometheus_metrics(
+            request: Request,
+            credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+        ):
+            authorize(request)
+            return Response(
+                content=generate_latest(app.state.telemetry.registry),
+                media_type=CONTENT_TYPE_LATEST,
+                headers={"Cache-Control": "no-store"},
+            )
 
     @app.post(
         "/chat",
@@ -717,6 +826,7 @@ def create_app(
             if executing:
                 await finish_idempotency(principal, idem, execution_token, 502, body)
             return json_response(502, body, rid)
+        observe_agent_result(result)
         if result.error_code == "AGENT_MODEL_TIMEOUT":
             body = error_body(result.error_code, rid)
             if executing:
@@ -1104,6 +1214,20 @@ def create_app(
         }
         return json_response(200, body, rid)
 
+    original_openapi = app.openapi
+
+    def stable_openapi():
+        schema = original_openapi()
+        for path_item in schema.get("paths", {}).values():
+            for operation in path_item.values():
+                if not isinstance(operation, dict):
+                    continue
+                response = operation.get("responses", {}).get("422")
+                if response is not None:
+                    response["description"] = "Unprocessable Entity"
+        return schema
+
+    app.openapi = stable_openapi
     return app
 
 

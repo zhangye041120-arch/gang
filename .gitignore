@@ -6,4 +6,10 @@ __pycache__/
 .pytest_cache/
 *.pyc
 logs/
+eval_runs/
+rag_runs/
+eval_outputs/
+backups/
+.coverage
+htmlcov/
 运行/*.log

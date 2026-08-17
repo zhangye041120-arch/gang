@@ -90,13 +90,15 @@ def test_all_action_modules_map_to_java_intents():
     assert normalize_intent("unknown", {"module": "M5"}) == "community"
 
 
-def test_api_lifespan_starts_checkin_scheduler_when_enabled():
+def test_api_lifespan_never_starts_checkin_scheduler():
     settings = Settings(api_test_mode=True, wecom_checkin_reminder_enabled=True)
     with TestClient(
         create_app(fake_agent, settings=settings, api_token="test-token", test_mode=True)
     ) as client:
         response = client.get("/health")
         assert response.status_code == 200
+        assert client.app.state.checkin_reminder is None
+        assert client.app.state.checkin_reminder_task is None
     assert normalize_intent("unknown", {"module": "M9"}) == "chat"
     assert normalize_intent("anything_else", None) == "chat"
 
