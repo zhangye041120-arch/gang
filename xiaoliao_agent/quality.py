@@ -1,9 +1,12 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from contextlib import nullcontext
 import hashlib
 from threading import Lock
 from typing import Any
 import uuid
+
+from .privacy import SubjectDeletedError
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,8 @@ class InspectionLog:
     error_pattern: str
     lesson_ref: str | None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    subject_hmac: str = ""
+    subject_id: str = field(default="", repr=False)
 
 
 @dataclass
@@ -56,28 +61,80 @@ class PromptPatch:
 
 
 class MemoryQualityRepository:
-    def __init__(self, *, fail_writes: bool = False):
+    def __init__(
+        self,
+        *,
+        fail_writes: bool = False,
+        privacy_guard: Any | None = None,
+    ):
         self.logs: dict[str, InspectionLog] = {}
         self.lessons: dict[str, LessonRecord] = {}
         self._lesson_by_hash: dict[str, str] = {}
+        self._lesson_subjects: dict[str, set[str]] = {}
         self.fail_writes = fail_writes
         self._lock = Lock()
+        self.privacy_guard = privacy_guard
 
     def write_log(self, item: InspectionLog) -> None:
-        with self._lock:
+        guard = (
+            self.privacy_guard.memory_write(item.subject_id)
+            if self.privacy_guard is not None and item.subject_id
+            else nullcontext()
+        )
+        with guard, self._lock:
             if self.fail_writes:
                 raise RuntimeError("quality log unavailable")
             self.logs.setdefault(item.request_id, item)
 
-    def add_lesson(self, content: str, error_pattern: str, prompt_version: str) -> LessonRecord:
+    def delete_subject(self, subject_hmacs: tuple[str, ...]) -> int:
+        with self._lock:
+            request_ids = [
+                request_id for request_id, item in self.logs.items()
+                if item.subject_hmac in subject_hmacs or item.user_hash in subject_hmacs
+            ]
+            for request_id in request_ids:
+                self.logs.pop(request_id, None)
+            lesson_ids = [
+                lesson_id
+                for lesson_id, subjects in self._lesson_subjects.items()
+                if subjects.intersection(subject_hmacs)
+            ]
+            for lesson_id in lesson_ids:
+                self._lesson_subjects.pop(lesson_id, None)
+                lesson = self.lessons.pop(lesson_id, None)
+                if lesson is not None:
+                    self._lesson_by_hash.pop(lesson.content_hash, None)
+            return len(request_ids) + len(lesson_ids)
+
+    def add_lesson(
+        self,
+        content: str,
+        error_pattern: str,
+        prompt_version: str,
+        *,
+        subject_hmac: str = "",
+        request_id: str = "",
+    ) -> LessonRecord:
         cleaned = content.strip()
         digest = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
-        with self._lock:
+        guard = (
+            self.privacy_guard.memory_subject_write(subject_hmac)
+            if self.privacy_guard is not None and subject_hmac
+            else nullcontext()
+        )
+        with guard, self._lock:
             if digest in self._lesson_by_hash:
-                return self.lessons[self._lesson_by_hash[digest]]
+                record = self.lessons[self._lesson_by_hash[digest]]
+                if subject_hmac:
+                    self._lesson_subjects.setdefault(record.lesson_id, set()).add(
+                        subject_hmac
+                    )
+                return record
             record = LessonRecord(uuid.uuid4().hex, cleaned, digest, error_pattern, prompt_version)
             self.lessons[record.lesson_id] = record
             self._lesson_by_hash[digest] = record.lesson_id
+            if subject_hmac:
+                self._lesson_subjects[record.lesson_id] = {subject_hmac}
             return record
 
     def review_lesson(self, lesson_id: str, status: str, *, reviewer: str, reason: str) -> LessonRecord:
@@ -112,6 +169,10 @@ class QualityService:
             with self._lock:
                 self._retry.pop(item.request_id, None)
             return []
+        except SubjectDeletedError:
+            with self._lock:
+                self._retry.pop(item.request_id, None)
+            return ["inspection_log_subject_deleted"]
         except Exception:
             with self._lock:
                 self._retry.setdefault(item.request_id, item)
@@ -120,6 +181,18 @@ class QualityService:
     def retry_failed(self) -> None:
         for item in self.retry_queue:
             self.write_log(item)
+
+    def delete_subject(self, subject_hmacs: tuple[str, ...]) -> int:
+        delete = getattr(self.repository, "delete_subject", None)
+        count = int(delete(subject_hmacs)) if delete is not None else 0
+        with self._lock:
+            self._retry = {
+                request_id: item
+                for request_id, item in self._retry.items()
+                if item.subject_hmac not in subject_hmacs
+                and item.user_hash not in subject_hmacs
+            }
+        return count
 
 
 class PromptPatchStore:
@@ -155,7 +228,7 @@ class PromptPatchStore:
 
 
 class PostgresQualityRepository:
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, *, privacy_guard: Any | None = None):
         if not database_url:
             raise ValueError("database URL is required")
         try:
@@ -163,19 +236,25 @@ class PostgresQualityRepository:
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("psycopg is required") from exc
         self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+        self.privacy_guard = privacy_guard
 
     def write_log(self, item: InspectionLog) -> None:
         import json
 
         with self._connect() as connection:
+            if self.privacy_guard is not None and item.subject_id:
+                self.privacy_guard.protect_postgres_write(
+                    connection, item.subject_id
+                )
             connection.execute(
                 """
                 INSERT INTO ai_inspection_logs
                     (request_id, message_id, user_hash, candidate_reply_ref, crisis_detected,
                      safety_violation, intent_accurate, age_appropriate, cbt_appropriate, issues,
                      latency_ms, main_model, inspector_model, prompt_version, input_tokens,
-                     output_tokens, total_tokens, cost, error_pattern, lesson_ref, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     output_tokens, total_tokens, cost, error_pattern, lesson_ref, created_at,
+                     subject_hmac)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (request_id) DO NOTHING
                 """,
                 (item.request_id, item.message_id, item.user_hash, item.candidate_reply_ref,
@@ -183,12 +262,24 @@ class PostgresQualityRepository:
                  item.age_appropriate, item.cbt_appropriate, json.dumps(item.issues, ensure_ascii=False),
                  item.latency_ms, item.main_model, item.inspector_model, item.prompt_version,
                  item.input_tokens, item.output_tokens, item.total_tokens, item.cost,
-                 item.error_pattern, item.lesson_ref, item.created_at),
+                 item.error_pattern, item.lesson_ref, item.created_at, item.subject_hmac),
             )
 
-    def add_lesson(self, content: str, error_pattern: str, prompt_version: str) -> LessonRecord:
+    def add_lesson(
+        self,
+        content: str,
+        error_pattern: str,
+        prompt_version: str,
+        *,
+        subject_hmac: str = "",
+        request_id: str = "",
+    ) -> LessonRecord:
         digest = hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
         with self._connect() as connection:
+            if self.privacy_guard is not None and subject_hmac:
+                self.privacy_guard.protect_postgres_subject(
+                    connection, subject_hmac
+                )
             row = connection.execute(
                 """
                 INSERT INTO ai_lessons (lesson_id, content, content_hash, error_pattern, prompt_version, status, created_at)
@@ -198,7 +289,18 @@ class PostgresQualityRepository:
                 """,
                 (uuid.uuid4().hex, content.strip(), digest, error_pattern, prompt_version),
             ).fetchone()
-        return LessonRecord(*row)
+            lesson = LessonRecord(*row)
+            if subject_hmac:
+                connection.execute(
+                    """
+                    INSERT INTO ai_lesson_subjects
+                        (lesson_id, subject_hmac, request_id)
+                    VALUES (%s,%s,%s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (lesson.lesson_id, subject_hmac, request_id),
+                )
+        return lesson
 
     def review_lesson(self, lesson_id: str, status: str, *, reviewer: str, reason: str) -> LessonRecord:
         if status not in {"approved", "rejected"} or not reviewer.strip() or not reason.strip():
@@ -267,10 +369,18 @@ class LessonCandidate:
     created_at: str
     reviewer: str = ""
     reason: str = ""
+    subject_hmac: str = field(default="", repr=False)
 
 
 class LessonRepository(Protocol):
-    def add_candidate(self, content: str, error_pattern: str, prompt_version: str) -> LessonCandidate:
+    def add_candidate(
+        self,
+        content: str,
+        error_pattern: str,
+        prompt_version: str,
+        *,
+        subject_hmac: str = "",
+    ) -> LessonCandidate:
         ...
 
     def list_candidates(self, status: ReviewStatus | None = None) -> list[LessonCandidate]:
@@ -293,7 +403,14 @@ class MemoryLessonRepository:
     def __init__(self):
         self._items: dict[str, LessonCandidate] = {}
 
-    def add_candidate(self, content: str, error_pattern: str, prompt_version: str) -> LessonCandidate:
+    def add_candidate(
+        self,
+        content: str,
+        error_pattern: str,
+        prompt_version: str,
+        *,
+        subject_hmac: str = "",
+    ) -> LessonCandidate:
         candidate = LessonCandidate(
             candidate_id=uuid.uuid4().hex,
             content=content,
@@ -301,9 +418,20 @@ class MemoryLessonRepository:
             prompt_version=prompt_version,
             status="pending",
             created_at=datetime.now(timezone.utc).isoformat(),
+            subject_hmac=subject_hmac,
         )
         self._items[candidate.candidate_id] = candidate
         return candidate
+
+    def delete_subject(self, subject_hmacs: tuple[str, ...]) -> int:
+        candidate_ids = [
+            candidate_id
+            for candidate_id, candidate in self._items.items()
+            if candidate.subject_hmac in subject_hmacs
+        ]
+        for candidate_id in candidate_ids:
+            self._items.pop(candidate_id, None)
+        return len(candidate_ids)
 
     def get(self, candidate_id: str) -> LessonCandidate:
         try:

@@ -61,7 +61,8 @@ def test_agent_terminal_paths_write_exactly_one_privacy_safe_log(message, main_r
     assert item.message_id == "msg-test"
     assert item.user_hash != "real-user-must-not-be-logged"
     assert "real-user" not in repr(item)
-    assert item.candidate_reply_ref.startswith("sha256:")
+    assert item.candidate_reply_ref.startswith("hmac-sha256:")
+    assert item.subject_hmac == item.user_hash
 
 
 def test_agent_log_failure_returns_reply_and_structured_alert():

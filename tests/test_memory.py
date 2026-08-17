@@ -113,6 +113,30 @@ def test_sensitive_memory_requires_extra_consent():
     assert service.save_candidate("user-1", candidate(sensitive=True, memory_type="key_event"))
 
 
+def test_sensitive_consent_revocation_immediately_filters_existing_records():
+    service, _, _ = make_service()
+    service.set_consent("user-1", personalization=True, sensitive=True)
+    service.save_candidate(
+        "user-1",
+        candidate(content="普通偏好", source_message_id="normal"),
+    )
+    service.save_candidate(
+        "user-1",
+        candidate(
+            content="敏感经历",
+            source_message_id="sensitive",
+            sensitive=True,
+            memory_type="key_event",
+        ),
+    )
+
+    service.set_consent("user-1", personalization=True, sensitive=False)
+
+    assert "普通偏好" in service.get_context("user-1")
+    assert "敏感经历" not in service.get_context("user-1")
+    assert all(record.sensitive is False for record in service.view("user-1"))
+
+
 def test_retrieval_filters_expired_and_limits_total_characters():
     service, repository, _ = make_service()
     service.set_consent("user-1", personalization=True)
@@ -229,6 +253,28 @@ def test_explicit_age_survives_new_conversation_with_same_user():
     )
     second_agent.chat("我今年多少岁", user_id="user-age", session_id="new-session", personalization=True)
     assert "用户年龄：60岁" in second_main.messages[-1]["content"]
+
+
+def test_agent_personal_fact_correction_creates_version_history():
+    service, repository, _ = make_service()
+    service.set_consent("user-versioned-age", personalization=True)
+    agent = XiaoliaoAgent(
+        Settings(),
+        main_client=EchoMainClient(),
+        inspector_client=PassingInspector(),
+        memory_service=service,
+    )
+
+    agent.chat("我今年60岁", user_id="user-versioned-age", personalization=True)
+    agent.chat("我今年61岁", user_id="user-versioned-age", personalization=True)
+
+    current = service.list_current("user-versioned-age")
+    history = repository.list_for_user(
+        "user-versioned-age", include_deleted=True
+    )
+    assert [record.content for record in current] == ["用户年龄：61岁"]
+    assert len(history) == 2
+    assert current[0].supersedes_memory_id in {record.memory_id for record in history}
 
 
 def test_explicit_personal_facts_survive_new_conversation():
@@ -350,3 +396,78 @@ def test_backfill_embedding_invalidates_query_cache_for_user():
     assert "user-1:京剧" in service._cache
     service.backfill_embedding("user-1", record.memory_id, [0.1, 0.2, 0.3])
     assert "user-1:京剧" not in service._cache
+
+
+def test_versioned_memory_replaces_current_record_and_preserves_history():
+    service, repository, _ = make_service()
+    service.set_consent("user-1", personalization=True)
+    first = service.save_versioned_candidate(
+        "user-1",
+        candidate(
+            content="用户喜欢戏曲",
+            source_message_id="m-version-1",
+            memory_key="interest.music",
+            source_type="conversation",
+        ),
+    )
+    second = service.save_versioned_candidate(
+        "user-1",
+        candidate(
+            content="用户现在更喜欢京剧",
+            source_message_id="m-version-2",
+            memory_key="interest.music",
+            source_type="correction",
+        ),
+    )
+
+    history = repository.list_for_user("user-1", include_deleted=True)
+    assert second.memory_id != first.memory_id
+    assert second.supersedes_memory_id == first.memory_id
+    assert first.valid_until is not None
+    assert [item.memory_id for item in service.list_current("user-1")] == [
+        second.memory_id
+    ]
+    assert {item.memory_id for item in history} == {first.memory_id, second.memory_id}
+
+
+def test_versioned_correction_preserves_provenance_and_invalidates_cache():
+    service, _, _ = make_service()
+    service.set_consent("user-1", personalization=True)
+    original = service.save_versioned_candidate(
+        "user-1",
+        candidate(memory_key="profile.name", source_type="conversation"),
+    )
+    assert service.get_context("user-1")
+    assert service.cache_contains("user-1")
+
+    corrected = service.correct("user-1", original.memory_id, "用户喜欢听京剧")
+
+    assert corrected.memory_id != original.memory_id
+    assert corrected.supersedes_memory_id == original.memory_id
+    assert corrected.source_type == "correction"
+    assert not service.cache_contains("user-1")
+
+
+def test_memory_cache_can_be_disabled_for_multi_worker_production():
+    repository = MemoryMemoryRepository()
+    service = MemoryService(repository, cache_enabled=False)
+    service.set_consent("user-1", personalization=True)
+    service.save_candidate("user-1", candidate())
+
+    assert service.get_context("user-1")
+    assert not service.cache_contains("user-1")
+
+
+def test_list_current_and_delete_one_are_user_scoped():
+    service, _, _ = make_service()
+    service.set_consent("user-1", personalization=True)
+    service.set_consent("user-2", personalization=True)
+    record = service.save_versioned_candidate(
+        "user-1", candidate(memory_key="profile.city")
+    )
+
+    with pytest.raises(KeyError):
+        service.correct("user-2", record.memory_id, "越权修改")
+    assert service.delete_one("user-2", record.memory_id) is False
+    assert service.delete_one("user-1", record.memory_id) is True
+    assert service.list_current("user-1") == []

@@ -68,7 +68,7 @@ def test_checksum_change_is_rejected(tmp_path):
 def test_latest_version_uses_repository_migrations():
     root = Path(__file__).resolve().parents[1] / "migrations"
 
-    assert latest_migration_version(root) == "008"
+    assert latest_migration_version(root) == "009"
 
 
 def test_reminder_migration_has_durable_and_idempotent_constraints():

@@ -10,8 +10,13 @@
 | AGENT_INVALID_IDEMPOTENCY_KEY | 422 | 幂等键格式非法 | 修正为 1-128 位 `[A-Za-z0-9_.:@-]` 后重发 |
 | AGENT_IDEMPOTENCY_CONFLICT | 409 | 同一幂等键复用于不同请求体 | 为新请求生成新键 |
 | AGENT_IDEMPOTENCY_IN_PROGRESS | 409 | 相同幂等请求仍在执行 | 稍后使用相同 Idempotency-Key 重试 |
+| AGENT_ACTION_EVENT_CONFLICT | 409 | 同一行动事件 ID 被用于不同请求 | 保留原事件，不覆盖；新事件使用新 ID |
+| AGENT_ACTION_EVENT_INVALID | 409 | 行动事件与推荐主体、模块或状态不匹配 | 刷新推荐状态，不自动改写事件 |
+| AGENT_MEMORY_NOT_FOUND | 404 | 记忆不存在或不属于签名用户 | 刷新记忆列表，不泄露其他用户资源 |
+| AGENT_SUBJECT_DELETED | 410 | 用户数据已删除并已建立墓碑 | 停止用户域调用；仅允许幂等删除确认 |
 | AGENT_RATE_LIMITED | 429 | 调用过频 | 指数退避后重试，或提示用户稍后再试 |
 | AGENT_RUNTIME_STATE_UNAVAILABLE | 503 | Redis 运行时状态不可用 | 不调用模型，退避后使用相同幂等键重试 |
+| AGENT_MEMORY_UNAVAILABLE | 503 | 行动事件已记录但记忆桥接暂不可用 | 使用相同 event_id 重试，服务会幂等补写 |
 | AGENT_MODEL_TIMEOUT | 504 | 模型超时 | 可携带相同 Idempotency-Key 重试一次 |
 | AGENT_MODEL_UNAVAILABLE | 502 | 模型或 Agent 依赖不可用 | 稍后重试，或走降级文案 |
 | AGENT_MODEL_NETWORK | 502 | 模型网络不可用 | 稍后重试 |

@@ -4,10 +4,11 @@ Java callers depend only on these models and error codes; they never see
 Prompts, RAG internals or model details.
 """
 import json
+from datetime import datetime
 from hashlib import sha256
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
 JAVA_INTENTS: tuple[str, ...] = ("chat", "checkin", "game", "exercise", "assessment", "community")
 Intent = Literal["chat", "checkin", "game", "exercise", "assessment", "community"]
@@ -70,6 +71,85 @@ class V1ChatResponse(BaseModel):
     debug: "V1DebugInfo | None" = None
 
 
+class ActionEventMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mood_score: StrictInt | None = Field(default=None, ge=1, le=5)
+    training_type: StrictStr | None = Field(
+        default=None, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+    difficulty: Literal["easy", "medium", "hard"] | None = None
+    exercise_type: StrictStr | None = Field(
+        default=None, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+    duration_seconds: StrictInt | None = Field(default=None, ge=0, le=86_400)
+    action_type: StrictStr | None = Field(
+        default=None, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+    achievement_code: StrictStr | None = Field(
+        default=None, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+    result_summary: StrictStr | None = Field(
+        default=None, max_length=100, pattern=r"^[A-Za-z0-9_. -]+$"
+    )
+    reason_code: StrictStr | None = Field(
+        default=None, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+
+
+class ActionEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: StrictStr = Field(min_length=1, max_length=128, pattern=_ID_PATTERN)
+    recommendation_id: StrictStr = Field(min_length=1, max_length=128, pattern=_ID_PATTERN)
+    user_id: StrictStr = Field(min_length=1, max_length=64, pattern=_ID_PATTERN)
+    module: Literal["M1", "M2", "M3", "M5"]
+    event_type: Literal["accepted", "completed", "declined", "expired"]
+    occurred_at: datetime
+    summary: StrictStr = Field(default="", max_length=200)
+    metadata: ActionEventMetadata = Field(default_factory=ActionEventMetadata)
+
+    @model_validator(mode="after")
+    def validate_occurred_at_timezone(self) -> "ActionEventRequest":
+        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone")
+        allowed = {
+            "M1": {"mood_score", "duration_seconds", "reason_code"},
+            "M2": {
+                "training_type", "difficulty", "duration_seconds",
+                "result_summary", "reason_code",
+            },
+            "M3": {
+                "exercise_type", "duration_seconds", "result_summary",
+                "reason_code",
+            },
+            "M5": {
+                "action_type", "achievement_code", "result_summary",
+                "reason_code",
+            },
+        }[self.module]
+        if self.metadata.model_fields_set - allowed:
+            raise ValueError("metadata field is not allowed for module")
+        return self
+
+
+class ActionEventResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"]
+    recommendation_id: str
+    duplicate: bool
+
+
+class PrivacyDeletionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["deleted", "redis_pending"]
+    subject_hmac: str
+    database_counts: dict[str, int]
+    redis_cleaned: bool
+
+
 class V1DebugInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -121,6 +201,11 @@ ERROR_CODES: dict[str, str] = {
     "AGENT_CRISIS_BLOCKED": "危机信号拦截",
     "AGENT_KB_UNAVAILABLE": "知识库不可用",
     "AGENT_SESSION_NOT_FOUND": "会话不存在",
+    "AGENT_MEMORY_NOT_FOUND": "记忆不存在或无权访问",
+    "AGENT_ACTION_EVENT_CONFLICT": "行动事件与已记录请求冲突",
+    "AGENT_ACTION_EVENT_INVALID": "行动事件状态或推荐不匹配",
+    "AGENT_MEMORY_UNAVAILABLE": "记忆存储暂不可用",
+    "AGENT_SUBJECT_DELETED": "用户数据已删除",
     "AGENT_TTS_DISABLED": "语音合成未开启",
 }
 

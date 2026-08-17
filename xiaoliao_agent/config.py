@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+import json
 import os
 from pathlib import Path
 import re
@@ -19,6 +21,7 @@ ACTION_WHITELIST = {
 }
 ACTION_WHITELIST_VERSION = "prototype-v1-pending-java-confirmation"
 _DEFAULT_QUALITY_HASH_SALT = "xiaoliao-local-quality"
+_HMAC_KEY_VERSION = re.compile(r"[A-Za-z0-9_.-]{1,32}")
 
 
 class ProductionConfigurationError(RuntimeError):
@@ -40,6 +43,26 @@ def _load_env() -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _parse_previous_hmac_keys(raw: str) -> dict[str, str]:
+    if not raw.strip():
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "PRIVACY_HMAC_PREVIOUS_KEYS must be a JSON object of string values"
+        ) from None
+    if not isinstance(parsed, dict) or not all(
+        isinstance(version, str) and isinstance(secret, str)
+        for version, secret in parsed.items()
+    ):
+        raise ValueError(
+            "PRIVACY_HMAC_PREVIOUS_KEYS must be a JSON object of string values"
+        )
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -111,8 +134,12 @@ class Settings:
     nonce_ttl_seconds: int = 900
     gateway_hmac_secret: str = ""
     gateway_clock_skew_seconds: int = 300
-    privacy_hmac_secret: str = ""
+    privacy_hmac_secret: str = field(default="", repr=False)
     privacy_hmac_key_version: str = "v1"
+    privacy_hmac_previous_keys: dict[str, str] = field(
+        default_factory=dict,
+        repr=False,
+    )
     backup_retention_days: int = 30
     crisis_route: str = "unconfigured"
     crisis_retention_days: int = 365
@@ -228,6 +255,9 @@ class Settings:
             gateway_clock_skew_seconds=int(os.getenv("GATEWAY_CLOCK_SKEW_SECONDS", "300")),
             privacy_hmac_secret=os.getenv("PRIVACY_HMAC_SECRET", ""),
             privacy_hmac_key_version=os.getenv("PRIVACY_HMAC_KEY_VERSION", "v1"),
+            privacy_hmac_previous_keys=_parse_previous_hmac_keys(
+                os.getenv("PRIVACY_HMAC_PREVIOUS_KEYS", "{}")
+            ),
             backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
             crisis_route=os.getenv("CRISIS_ROUTE", "unconfigured"),
             crisis_retention_days=int(os.getenv("CRISIS_RETENTION_DAYS", "365")),
@@ -313,13 +343,35 @@ class Settings:
             "QUALITY_HASH_SALT": self.quality_hash_salt,
         }
         for name, value in strong_secrets.items():
-            if len(value) < 32:
+            if not isinstance(value, str) or len(value.encode("utf-8")) < 32:
                 invalid.append(name)
         if self.quality_hash_salt == _DEFAULT_QUALITY_HASH_SALT:
             invalid.append("QUALITY_HASH_SALT")
+        previous_secrets: list[str] = []
+        previous_keys_invalid = False
+        if not isinstance(self.privacy_hmac_previous_keys, Mapping):
+            previous_keys_invalid = True
+        else:
+            for version, secret in self.privacy_hmac_previous_keys.items():
+                if not isinstance(version, str) or not _HMAC_KEY_VERSION.fullmatch(
+                    version
+                ):
+                    previous_keys_invalid = True
+                if not isinstance(secret, str) or len(secret.encode("utf-8")) < 32:
+                    previous_keys_invalid = True
+                else:
+                    previous_secrets.append(secret)
+            if self.privacy_hmac_key_version in self.privacy_hmac_previous_keys:
+                previous_keys_invalid = True
+
         secret_values = list(strong_secrets.values())
-        if len(set(secret_values)) != len(secret_values):
+        all_secret_values = secret_values + previous_secrets
+        if len(set(all_secret_values)) != len(all_secret_values):
             invalid.append("PRODUCTION_SECRETS_MUST_DIFFER")
+            if previous_secrets:
+                previous_keys_invalid = True
+        if previous_keys_invalid:
+            invalid.append("PRIVACY_HMAC_PREVIOUS_KEYS")
 
         if self.api_test_mode:
             invalid.append("API_TEST_MODE")
@@ -355,7 +407,7 @@ class Settings:
             invalid.append("API_FORWARDED_ALLOW_IPS")
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", self.redis_key_prefix):
             invalid.append("REDIS_KEY_PREFIX")
-        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", self.privacy_hmac_key_version):
+        if not _HMAC_KEY_VERSION.fullmatch(self.privacy_hmac_key_version):
             invalid.append("PRIVACY_HMAC_KEY_VERSION")
 
         if invalid:

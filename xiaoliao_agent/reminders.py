@@ -10,10 +10,11 @@ an external durable store.
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
+from contextlib import nullcontext
 import re
 import threading
 import uuid
-from typing import Protocol
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 
@@ -75,16 +76,24 @@ class ReminderRepository(Protocol):
 
 
 class MemoryReminderRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, privacy_guard: Any | None = None) -> None:
         self._lock = threading.Lock()
         self._items: dict[str, list[Reminder]] = {}
+        self.privacy_guard = privacy_guard
+
+    def _write(self, user_id: str):
+        return (
+            self.privacy_guard.memory_write(user_id)
+            if self.privacy_guard is not None
+            else nullcontext()
+        )
 
     def list_for_user(self, user_id: str) -> list[Reminder]:
         with self._lock:
             return list(self._items.get(user_id, []))
 
     def add(self, reminder: Reminder) -> Reminder:
-        with self._lock:
+        with self._write(reminder.user_id), self._lock:
             self._items.setdefault(reminder.user_id, []).append(reminder)
         return reminder
 
@@ -94,7 +103,7 @@ class MemoryReminderRepository:
         *,
         since: datetime,
     ) -> tuple[Reminder, bool]:
-        with self._lock:
+        with self._write(reminder.user_id), self._lock:
             existing = next(
                 (
                     item
@@ -114,7 +123,7 @@ class MemoryReminderRepository:
 
 
 class PostgresReminderRepository:
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, *, privacy_guard: Any | None = None):
         if not database_url:
             raise ValueError("database URL is required")
         try:
@@ -122,6 +131,7 @@ class PostgresReminderRepository:
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("psycopg is required") from exc
         self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+        self.privacy_guard = privacy_guard
 
     @staticmethod
     def _from_row(row) -> Reminder:
@@ -149,6 +159,10 @@ class PostgresReminderRepository:
     ) -> tuple[Reminder, bool]:
         lock_key = f"reminder:{reminder.user_id}:{reminder.fingerprint}"
         with self._connect() as connection:
+            if self.privacy_guard is not None:
+                self.privacy_guard.protect_postgres_write(
+                    connection, reminder.user_id
+                )
             connection.execute(
                 """
                 INSERT INTO ai_users

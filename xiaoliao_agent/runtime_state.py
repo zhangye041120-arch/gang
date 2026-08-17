@@ -16,6 +16,10 @@ class RuntimeStateUnavailable(RuntimeError):
     pass
 
 
+class RuntimeSubjectDeleted(PermissionError):
+    pass
+
+
 @dataclass(frozen=True)
 class ClaimResult:
     decision: str
@@ -72,6 +76,10 @@ class RedisRuntimeState:
     def idempotency_key(self, scope: str, key: str) -> str:
         return self._key("idempotency", self._digest(scope, key))
 
+    @staticmethod
+    def _subject_scope(value: str) -> str | None:
+        return value if value.startswith("hmac-sha256:") else None
+
     async def ping(self) -> bool:
         try:
             return bool(await self.client.ping())
@@ -110,6 +118,32 @@ class RedisRuntimeState:
         window = str(int(time.time() // 60))
         principal_key = self._key("rate-principal", self._digest(principal, window))
         user_key = self._key("rate-user", self._digest(user_id, window))
+        subject = self._subject_scope(principal)
+        if subject is not None:
+            tombstone_key = self._tombstone_key(subject)
+            index_key = self._subject_index_key(subject)
+            while True:
+                try:
+                    async with self.client.pipeline(transaction=True) as pipeline:
+                        await pipeline.watch(tombstone_key, index_key)
+                        if await pipeline.exists(tombstone_key):
+                            await pipeline.unwatch()
+                            raise RuntimeSubjectDeleted("subject is deleted")
+                        pipeline.multi()
+                        pipeline.incr(principal_key)
+                        pipeline.expire(principal_key, 120)
+                        pipeline.incr(user_key)
+                        pipeline.expire(user_key, 120)
+                        pipeline.sadd(index_key, principal_key, user_key)
+                        pipeline.expire(index_key, self.idempotency_ttl_seconds)
+                        result = await pipeline.execute()
+                        return int(result[0]) <= per_minute and int(result[2]) <= per_user
+                except WatchError:
+                    continue
+                except RuntimeSubjectDeleted:
+                    raise
+                except RedisError as exc:
+                    raise RuntimeStateUnavailable("Redis rate limiting is unavailable") from exc
         try:
             async with self.client.pipeline(transaction=True) as pipeline:
                 pipeline.incr(principal_key)
@@ -130,6 +164,9 @@ class RedisRuntimeState:
         wait_timeout: float = 5.0,
     ) -> ClaimResult:
         redis_key = self.idempotency_key(scope, key)
+        subject = self._subject_scope(scope)
+        tombstone_key = self._tombstone_key(subject) if subject else ""
+        index_key = self._subject_index_key(subject) if subject else ""
         deadline = time.monotonic() + max(0.0, wait_timeout)
         while True:
             token = secrets.token_urlsafe(24)
@@ -137,7 +174,13 @@ class RedisRuntimeState:
             lease_until_ms = now_ms + self.execution_ttl_seconds * 1000
             try:
                 async with self.client.pipeline(transaction=True) as pipeline:
-                    await pipeline.watch(redis_key)
+                    watch_keys = [redis_key]
+                    if subject:
+                        watch_keys.extend((tombstone_key, index_key))
+                    await pipeline.watch(*watch_keys)
+                    if subject and await pipeline.exists(tombstone_key):
+                        await pipeline.unwatch()
+                        raise RuntimeSubjectDeleted("subject is deleted")
                     entry = await pipeline.hgetall(redis_key)
                     if not entry:
                         pipeline.multi()
@@ -151,6 +194,9 @@ class RedisRuntimeState:
                             },
                         )
                         pipeline.expire(redis_key, self.idempotency_ttl_seconds)
+                        if subject:
+                            pipeline.sadd(index_key, redis_key)
+                            pipeline.expire(index_key, self.idempotency_ttl_seconds)
                         await pipeline.execute()
                         return ClaimResult("execute", execution_token=token)
                     if entry.get("fingerprint") != fingerprint:
@@ -175,11 +221,16 @@ class RedisRuntimeState:
                             },
                         )
                         pipeline.expire(redis_key, self.idempotency_ttl_seconds)
+                        if subject:
+                            pipeline.sadd(index_key, redis_key)
+                            pipeline.expire(index_key, self.idempotency_ttl_seconds)
                         await pipeline.execute()
                         return ClaimResult("execute", execution_token=token)
                     await pipeline.unwatch()
             except WatchError:
                 continue
+            except RuntimeSubjectDeleted:
+                raise
             except (RedisError, ValueError, json.JSONDecodeError) as exc:
                 raise RuntimeStateUnavailable("Redis idempotency state is unavailable") from exc
             if time.monotonic() >= deadline:
@@ -263,16 +314,26 @@ class RedisRuntimeState:
         return self._key("subject-deleted", self._digest(subject_hmac))
 
     async def register_subject_key(self, subject_hmac: str, key: str) -> None:
-        if await self.is_tombstoned(subject_hmac):
-            raise ValueError("subject is deleted")
         index_key = self._subject_index_key(subject_hmac)
-        try:
-            async with self.client.pipeline(transaction=True) as pipeline:
-                pipeline.sadd(index_key, key)
-                pipeline.expire(index_key, self.idempotency_ttl_seconds)
-                await pipeline.execute()
-        except RedisError as exc:
-            raise RuntimeStateUnavailable("Redis subject index is unavailable") from exc
+        tombstone_key = self._tombstone_key(subject_hmac)
+        while True:
+            try:
+                async with self.client.pipeline(transaction=True) as pipeline:
+                    await pipeline.watch(tombstone_key, index_key)
+                    if await pipeline.exists(tombstone_key):
+                        await pipeline.unwatch()
+                        raise RuntimeSubjectDeleted("subject is deleted")
+                    pipeline.multi()
+                    pipeline.sadd(index_key, key)
+                    pipeline.expire(index_key, self.idempotency_ttl_seconds)
+                    await pipeline.execute()
+                    return
+            except WatchError:
+                continue
+            except RuntimeSubjectDeleted:
+                raise
+            except RedisError as exc:
+                raise RuntimeStateUnavailable("Redis subject index is unavailable") from exc
 
     async def begin_deletion(self, subject_hmac: str, ttl_seconds: int = 2_592_000) -> bool:
         try:
@@ -295,10 +356,19 @@ class RedisRuntimeState:
 
     async def delete_subject(self, subject_hmac: str) -> int:
         index_key = self._subject_index_key(subject_hmac)
-        try:
-            keys = list(await self.client.smembers(index_key))
-            deleted = int(await self.client.delete(*keys)) if keys else 0
-            await self.client.delete(index_key)
-            return deleted
-        except RedisError as exc:
-            raise RuntimeStateUnavailable("Redis subject cleanup is unavailable") from exc
+        tombstone_key = self._tombstone_key(subject_hmac)
+        while True:
+            try:
+                async with self.client.pipeline(transaction=True) as pipeline:
+                    await pipeline.watch(tombstone_key, index_key)
+                    keys = list(await pipeline.smembers(index_key))
+                    pipeline.multi()
+                    if keys:
+                        pipeline.delete(*keys)
+                    pipeline.delete(index_key)
+                    result = await pipeline.execute()
+                    return int(result[0]) if keys else 0
+            except WatchError:
+                continue
+            except RedisError as exc:
+                raise RuntimeStateUnavailable("Redis subject cleanup is unavailable") from exc

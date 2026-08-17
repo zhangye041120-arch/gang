@@ -1,8 +1,9 @@
 import asyncio
 
 import fakeredis.aioredis
+import pytest
 
-from xiaoliao_agent.runtime_state import RedisRuntimeState
+from xiaoliao_agent.runtime_state import RedisRuntimeState, RuntimeSubjectDeleted
 
 
 def make_states():
@@ -131,6 +132,47 @@ def test_subject_index_deletes_registered_keys_and_keeps_tombstone():
         assert deleted == 2
         assert await client.exists(key_a, key_b) == 0
         assert await first.is_tombstoned(subject)
+        await first.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_subject_rate_and_idempotency_keys_are_automatically_indexed():
+    async def scenario():
+        first, _second, client = make_states()
+        subject = "hmac-sha256:v1:" + "b" * 64
+        assert await first.allow_rate(
+            subject, "raw-user", per_minute=10, per_user=10
+        )
+        await first.claim_idempotency(
+            subject, "indexed-idem", "fp", wait_timeout=0
+        )
+        index_key = first._subject_index_key(subject)
+        indexed = await client.smembers(index_key)
+
+        assert first.idempotency_key(subject, "indexed-idem") in indexed
+        assert len(indexed) >= 3
+        await first.begin_deletion(subject)
+        await first.delete_subject(subject)
+        assert await client.exists(*indexed) == 0
+        assert await client.exists(index_key) == 0
+        await first.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_subject_tombstone_blocks_new_runtime_keys():
+    async def scenario():
+        first, _second, _client = make_states()
+        subject = "hmac-sha256:v1:" + "c" * 64
+        await first.begin_deletion(subject)
+
+        with pytest.raises(RuntimeSubjectDeleted):
+            await first.allow_rate(subject, "raw-user", per_minute=10, per_user=10)
+        with pytest.raises(RuntimeSubjectDeleted):
+            await first.claim_idempotency(subject, "new-idem", "fp", wait_timeout=0)
+        with pytest.raises(RuntimeSubjectDeleted):
+            await first.register_subject_key(subject, "new-key")
         await first.aclose()
 
     asyncio.run(scenario())

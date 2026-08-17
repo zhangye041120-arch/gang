@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import nullcontext
 from threading import Lock
 import uuid
 from typing import Any
+
+from .content_refs import HmacReferenceService
 
 
 @dataclass
@@ -48,16 +51,24 @@ class AuditRecord:
 
 
 class MemoryUserRepository:
-    def __init__(self):
+    def __init__(self, *, privacy_guard: Any | None = None):
         self._users: dict[str, UserRecord] = {}
         self._consents: dict[str, UserConsent] = {}
         self._events: dict[str, ConversationEvent] = {}
         self._audits: dict[str, AuditRecord] = {}
         self._lock = Lock()
+        self.privacy_guard = privacy_guard
+
+    def _write(self, user_id: str):
+        return (
+            self.privacy_guard.memory_write(user_id)
+            if self.privacy_guard is not None
+            else nullcontext()
+        )
 
     def get_or_create_user(self, user_id: str, *, nickname: str = "", birth_year: int | None = None) -> UserRecord:
         now = datetime.now(timezone.utc)
-        with self._lock:
+        with self._write(user_id), self._lock:
             user = self._users.get(user_id)
             if user is not None:
                 return user
@@ -81,7 +92,7 @@ class MemoryUserRepository:
         version: str = "v1",
     ) -> UserConsent:
         now = datetime.now(timezone.utc)
-        with self._lock:
+        with self._write(user_id), self._lock:
             current = self._consents.get(user_id)
             granted_at = current.granted_at if current and current.granted_at else None
             revoked_at = current.revoked_at if current and current.revoked_at else None
@@ -109,12 +120,12 @@ class MemoryUserRepository:
             return (consent.personalization, consent.sensitive) if consent else (False, False)
 
     def log_conversation_event(self, event: ConversationEvent) -> ConversationEvent:
-        with self._lock:
+        with self._write(event.user_id), self._lock:
             self._events[event.event_id] = event
             return event
 
     def log_audit(self, record: AuditRecord) -> AuditRecord:
-        with self._lock:
+        with self._write(record.user_id), self._lock:
             self._audits[record.audit_id] = record
             return record
 
@@ -143,7 +154,7 @@ class MemoryUserRepository:
 
 
 class PostgresUserRepository:
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, *, privacy_guard: Any | None = None):
         if not database_url:
             raise ValueError("database URL is required")
         try:
@@ -151,9 +162,16 @@ class PostgresUserRepository:
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("psycopg is required") from exc
         self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+        self.privacy_guard = privacy_guard
+
+    def _protect(self, connection: Any, user_id: str) -> None:
+        guard = getattr(self, "privacy_guard", None)
+        if guard is not None:
+            guard.protect_postgres_write(connection, user_id)
 
     def get_or_create_user(self, user_id: str, *, nickname: str = "", birth_year: int | None = None) -> UserRecord:
         with self._connect() as connection:
+            self._protect(connection, user_id)
             connection.execute(
                 """
                 INSERT INTO ai_users (user_id, nickname, birth_year, status, created_at, updated_at)
@@ -177,6 +195,7 @@ class PostgresUserRepository:
         version: str = "v1",
     ) -> UserConsent:
         with self._connect() as connection:
+            self._protect(connection, user_id)
             row = connection.execute(
                 """
                 INSERT INTO ai_consents
@@ -215,6 +234,7 @@ class PostgresUserRepository:
 
     def log_conversation_event(self, event: ConversationEvent) -> ConversationEvent:
         with self._connect() as connection:
+            self._protect(connection, event.user_id)
             connection.execute(
                 """
                 INSERT INTO ai_conversation_events
@@ -228,6 +248,7 @@ class PostgresUserRepository:
 
     def log_audit(self, record: AuditRecord) -> AuditRecord:
         with self._connect() as connection:
+            self._protect(connection, record.user_id)
             connection.execute(
                 """
                 INSERT INTO ai_audit_logs (audit_id, user_id, action, resource, request_id, created_at)
@@ -264,9 +285,13 @@ class UserDataService:
         repository: MemoryUserRepository | PostgresUserRepository,
         *,
         memory_service: Any | None = None,
+        reference_service: HmacReferenceService | None = None,
     ):
         self.repository = repository
         self.memory_service = memory_service
+        self.reference_service = reference_service or HmacReferenceService(
+            "xiaoliao-development-reference-key"
+        )
 
     def get_or_create_user(self, user_id: str, **kwargs) -> UserRecord:
         return self.repository.get_or_create_user(user_id, **kwargs)
@@ -287,6 +312,17 @@ class UserDataService:
 
     def consent_for(self, user_id: str) -> tuple[bool, bool]:
         return self.repository.get_consent(user_id)
+
+    def effective_consent(
+        self,
+        user_id: str,
+        requested_personalization: bool,
+        requested_sensitive: bool,
+    ) -> tuple[bool, bool]:
+        stored_personalization, stored_sensitive = self.consent_for(user_id)
+        personalization = stored_personalization and requested_personalization
+        sensitive = personalization and stored_sensitive and requested_sensitive
+        return personalization, sensitive
 
     def log_conversation_pair(
         self,
@@ -362,8 +398,5 @@ class UserDataService:
             self.memory_service.set_consent(user_id, personalization=False)
         self.repository.delete_user(user_id)
 
-    @staticmethod
-    def _content_ref(content: str) -> str:
-        import hashlib
-
-        return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+    def _content_ref(self, content: str) -> str:
+        return self.reference_service.conversation_ref(content)

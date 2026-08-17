@@ -105,10 +105,102 @@ def test_v1_consent_summary_and_privacy_delete_round_trip():
         }, headers=headers())
         assert deleted.status_code == 200
         assert deleted.json()["status"] == "deleted"
+        assert "user_id" not in deleted.json()
+        assert "user_consent" not in deleted.text
+        assert deleted.json()["subject_hmac"].startswith("hmac-sha256:")
 
         after = client.get("/v1/me/summary", params={"user_id": "user_consent"}, headers=headers())
-        assert after.json()["personalization"] is False
-        assert after.json()["profile"] == []
+        assert after.status_code == 410
+        assert after.json()["error_code"] == "AGENT_SUBJECT_DELETED"
+
+        repeated = client.post("/v1/privacy/delete-request", json={
+            "user_id": "user_consent",
+        }, headers=headers())
+        assert repeated.status_code == 200
+        assert repeated.json()["subject_hmac"] == deleted.json()["subject_hmac"]
+
+
+class ConsentRecordingAgent:
+    def __init__(self):
+        self.calls = []
+        self.settings = Settings()
+        self.kb = type("KB", (), {"chunks": ["one"]})()
+
+    def chat(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return AgentResult(
+            reply="收到",
+            intent="chat",
+            action=None,
+            blocked=False,
+            crisis_detected=False,
+            safety_violation=False,
+            rewritten=False,
+            inspection=InspectionResult(),
+            sources=[],
+        )
+
+
+def test_v1_chat_cannot_self_grant_personalization_or_inject_summary():
+    from xiaoliao_agent.user_data import MemoryUserRepository, UserDataService
+
+    agent = ConsentRecordingAgent()
+    user_data = UserDataService(MemoryUserRepository())
+    with TestClient(create_app(
+        lambda: agent,
+        api_token="test-token",
+        test_mode=True,
+        user_data_service=user_data,
+    )) as client:
+        response = client.post(
+            "/v1/chat",
+            json=payload(
+                user_id="no-consent",
+                context={
+                    "consent": {"personalization": True},
+                    "user_summary": "SECRET SUMMARY",
+                },
+            ),
+            headers=headers(),
+        )
+
+    assert response.status_code == 200
+    args, kwargs = agent.calls[0]
+    assert args[2] == ""
+    assert args[5] is False
+    assert "SECRET SUMMARY" not in repr((args, kwargs))
+
+
+def test_v1_chat_uses_summary_only_when_server_and_request_allow_it():
+    from xiaoliao_agent.user_data import MemoryUserRepository, UserDataService
+
+    agent = ConsentRecordingAgent()
+    user_data = UserDataService(MemoryUserRepository())
+    user_data.get_or_create_user("consented")
+    user_data.set_consent("consented", personalization=True, sensitive=True)
+    with TestClient(create_app(
+        lambda: agent,
+        api_token="test-token",
+        test_mode=True,
+        user_data_service=user_data,
+    )) as client:
+        response = client.post(
+            "/v1/chat",
+            json=payload(
+                user_id="consented",
+                context={
+                    "consent": {"personalization": True},
+                    "user_summary": "AUTHORIZED SUMMARY",
+                },
+            ),
+            headers=headers(),
+        )
+
+    assert response.status_code == 200
+    args, kwargs = agent.calls[0]
+    assert args[2] == "AUTHORIZED SUMMARY"
+    assert args[5] is True
+    assert kwargs["context_prefs"]["consent"]["personalization"] is True
 
 
 def test_v1_chat_logs_conversation_events_once():

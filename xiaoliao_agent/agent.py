@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Generator
 import uuid
 from datetime import timedelta
-import hashlib
 import time
 import warnings
 
@@ -64,6 +63,8 @@ from .api_contract import (
     MainPayload,
     MainResponse,
 )
+from .content_refs import HmacReferenceService
+from .privacy import SubjectPrivacyGuard
 
 JAVA_INTENTS = frozenset({"chat", "checkin", "game", "exercise", "assessment", "community"})
 _LIVE_NOT_FETCHED = object()
@@ -485,8 +486,15 @@ class XiaoliaoAgent:
         memory_service: Any | None = None,
         action_service: Any | None = None,
         quality_service: Any | None = None,
+        reference_service: HmacReferenceService | None = None,
     ):
         self.settings = settings or Settings.from_env()
+        self.reference_service = reference_service or HmacReferenceService(
+            self.settings.privacy_hmac_secret or self.settings.quality_hash_salt,
+            key_version=self.settings.privacy_hmac_key_version,
+            previous_keys=self.settings.privacy_hmac_previous_keys,
+        )
+        self.privacy_guard = SubjectPrivacyGuard(self.reference_service)
         if self.settings.knowledge_database_url and not _db_reachable(self.settings.knowledge_database_url):
             if self.settings.is_production:
                 raise RuntimeError("production database is unavailable")
@@ -572,17 +580,27 @@ class XiaoliaoAgent:
             self.reminder_service = reminder_service
         elif self.settings.knowledge_database_url:
             self.reminder_service = ReminderService(
-                PostgresReminderRepository(self.settings.knowledge_database_url)
+                PostgresReminderRepository(
+                    self.settings.knowledge_database_url,
+                    privacy_guard=self.privacy_guard,
+                )
             )
         else:
-            self.reminder_service = ReminderService(MemoryReminderRepository())
+            self.reminder_service = ReminderService(
+                MemoryReminderRepository(privacy_guard=self.privacy_guard)
+            )
         self.lesson_repository = lesson_repository or MemoryLessonRepository()
         if crisis_repository is not None:
             self.crisis_repository = crisis_repository
         elif self.settings.knowledge_database_url:
-            self.crisis_repository = PostgresCrisisEventRepository(self.settings.knowledge_database_url)
+            self.crisis_repository = PostgresCrisisEventRepository(
+                self.settings.knowledge_database_url,
+                privacy_guard=self.privacy_guard,
+            )
         else:
-            self.crisis_repository = MemoryCrisisEventRepository()
+            self.crisis_repository = MemoryCrisisEventRepository(
+                privacy_guard=self.privacy_guard
+            )
         crisis_sender = None
         recipients = [
             item.strip()
@@ -632,17 +650,21 @@ class XiaoliaoAgent:
             self.memory_service = memory_service
         elif self.settings.knowledge_database_url:
             self.memory_service = MemoryService(
-                PostgresMemoryRepository(self.settings.knowledge_database_url),
+                PostgresMemoryRepository(
+                    self.settings.knowledge_database_url,
+                    privacy_guard=self.privacy_guard,
+                ),
                 embed_client=self._embed_client if self.settings.memory_vector_search_enabled else None,
                 confidence_threshold=self.settings.memory_confidence_threshold,
                 default_limit=self.settings.memory_max_items,
                 default_max_chars=self.settings.memory_max_chars,
                 vector_min_score=self.settings.memory_vector_min_score,
                 vector_search_fallback=True,
+                cache_enabled=False,
             )
         else:
             self.memory_service = MemoryService(
-                MemoryMemoryRepository(),
+                MemoryMemoryRepository(privacy_guard=self.privacy_guard),
                 confidence_threshold=self.settings.memory_confidence_threshold,
                 default_limit=self.settings.memory_max_items,
                 default_max_chars=self.settings.memory_max_chars,
@@ -651,22 +673,32 @@ class XiaoliaoAgent:
             self.action_service = action_service
         elif self.settings.knowledge_database_url:
             self.action_service = ActionService(
-                PostgresActionRepository(self.settings.knowledge_database_url),
+                PostgresActionRepository(
+                    self.settings.knowledge_database_url,
+                    privacy_guard=self.privacy_guard,
+                ),
                 memory_service=self.memory_service,
                 decline_cooldown=timedelta(hours=self.settings.action_decline_cooldown_hours),
+                reference_service=self.reference_service,
             )
         else:
             self.action_service = ActionService(
-                MemoryActionRepository(),
+                MemoryActionRepository(privacy_guard=self.privacy_guard),
                 memory_service=self.memory_service,
                 decline_cooldown=timedelta(hours=self.settings.action_decline_cooldown_hours),
+                reference_service=self.reference_service,
             )
         if quality_service is not None:
             self.quality_service = quality_service
         elif self.settings.knowledge_database_url:
-            self.quality_service = QualityService(PostgresQualityRepository(self.settings.knowledge_database_url))
+            self.quality_service = QualityService(PostgresQualityRepository(
+                self.settings.knowledge_database_url,
+                privacy_guard=self.privacy_guard,
+            ))
         else:
-            self.quality_service = QualityService(MemoryQualityRepository())
+            self.quality_service = QualityService(
+                MemoryQualityRepository(privacy_guard=self.privacy_guard)
+            )
         # Lesson bridge — feeds approved operational lessons back into RAG
         self.lesson_bridge = LessonBridge(
             self.quality_service.repository,
@@ -939,6 +971,11 @@ class XiaoliaoAgent:
         for index, (memory_type, key, content) in enumerate(self._extract_personal_facts(user_text)):
             try:
                 source_message_id = f"{request_id or uuid.uuid4().hex}-{index}"
+                key_value = key if key in _SINGLE_VALUE_MEMORY_KEYS else content
+                memory_key = self.reference_service.fingerprint(
+                    "memory-key",
+                    f"{memory_type}\n{key_value}".encode("utf-8"),
+                )
                 existing = [
                     record
                     for record in self.memory_service.view(user_id)
@@ -950,7 +987,7 @@ class XiaoliaoAgent:
                     if key in _SINGLE_VALUE_MEMORY_KEYS:
                         self.memory_service.correct(user_id, existing[0].memory_id, content)
                     else:
-                        self.memory_service.save_candidate(
+                        self.memory_service.save_versioned_candidate(
                             user_id,
                             MemoryCandidate(
                                 memory_type=memory_type,
@@ -959,10 +996,12 @@ class XiaoliaoAgent:
                                 source_message_id=source_message_id,
                                 consent_scope="personalization",
                                 explicitly_stated=True,
+                                memory_key=memory_key,
+                                source_type="explicit",
                             ),
                         )
                 else:
-                    self.memory_service.save_candidate(
+                    self.memory_service.save_versioned_candidate(
                         user_id,
                         MemoryCandidate(
                             memory_type=memory_type,
@@ -971,6 +1010,8 @@ class XiaoliaoAgent:
                             source_message_id=source_message_id,
                             consent_scope="personalization",
                             explicitly_stated=True,
+                            memory_key=memory_key,
+                            source_type="explicit",
                         ),
                     )
             except Exception:
@@ -1026,6 +1067,7 @@ class XiaoliaoAgent:
         *,
         thinking: bool = False,
         context: str = "",
+        user_id: str = "",
     ) -> InspectionResult:
         client = self._inspector_escalation_client_instance() if thinking else self.inspector_client
         try:
@@ -1067,6 +1109,9 @@ class XiaoliaoAgent:
                 inspection.lesson.strip(),
                 inspection.error_pattern,
                 self.settings.prompt_version,
+                subject_hmac=(
+                    self.reference_service.subject_hmac(user_id) if user_id else ""
+                ),
             )
         return inspection
 
@@ -1076,8 +1121,11 @@ class XiaoliaoAgent:
         candidate: MainResponse,
         *,
         context: str = "",
+        user_id: str = "",
     ) -> InspectionResult:
-        return self._run_inspector(user_text, candidate, thinking=False, context=context)
+        return self._run_inspector(
+            user_text, candidate, thinking=False, context=context, user_id=user_id
+        )
 
     def _should_escalate(self, candidate: MainResponse, inspection: InspectionResult) -> bool:
         if (
@@ -1212,6 +1260,8 @@ class XiaoliaoAgent:
                     result.inspection.lesson.strip(),
                     result.inspection.error_pattern if result.inspection.error_pattern in INSPECTION_ERROR_PATTERNS else "unknown",
                     self.settings.prompt_version,
+                    subject_hmac=self.reference_service.subject_hmac(user_id),
+                    request_id=result.request_id,
                 )
                 lesson_ref = lesson.lesson_id
             except Exception:
@@ -1222,8 +1272,8 @@ class XiaoliaoAgent:
         log = InspectionLog(
             request_id=result.request_id,
             message_id=message_id or f"msg-{result.request_id}",
-            user_hash=hashlib.sha256(f"{self.settings.quality_hash_salt}:{user_id}".encode("utf-8")).hexdigest(),
-            candidate_reply_ref="sha256:" + hashlib.sha256(result.reply.encode("utf-8")).hexdigest(),
+            user_hash=self.reference_service.subject_hmac(user_id),
+            candidate_reply_ref=self.reference_service.candidate_reply_ref(result.reply),
             crisis_detected=result.crisis_detected,
             safety_violation=result.safety_violation,
             intent_accurate=result.inspection.intent_accurate,
@@ -1240,6 +1290,8 @@ class XiaoliaoAgent:
             cost=None,
             error_pattern=error_pattern,
             lesson_ref=lesson_ref,
+            subject_hmac=self.reference_service.subject_hmac(user_id),
+            subject_id=user_id,
         )
         result.alerts.extend(self.quality_service.write_log(log))
         return result
@@ -1382,10 +1434,10 @@ class XiaoliaoAgent:
             return
 
         # ── inspector ────────────────────────────────────────────
-        inspection = self._inspect(user_text, candidate, context=combined_context)
+        inspection = self._inspect(user_text, candidate, context=combined_context, user_id=user_id)
         if self._should_escalate(candidate, inspection):
             inspection = self._run_inspector(
-                user_text, candidate, thinking=True, context=combined_context,
+                user_text, candidate, thinking=True, context=combined_context, user_id=user_id,
             )
         rewritten = False
         final_reply = candidate.reply
@@ -1476,10 +1528,10 @@ class XiaoliaoAgent:
                        "safety_violation": result.safety_violation,
                        "rewritten": True, "latency_ms": latency}
                 return
-            inspection = self._inspect(user_text, candidate, context=combined_context)
+            inspection = self._inspect(user_text, candidate, context=combined_context, user_id=user_id)
             if self._should_escalate(candidate, inspection):
                 inspection = self._run_inspector(
-                    user_text, candidate, thinking=True, context=combined_context,
+                    user_text, candidate, thinking=True, context=combined_context, user_id=user_id,
                 )
             if inspection.hard_blocked:
                 if inspection.crisis_detected:
@@ -1684,12 +1736,12 @@ class XiaoliaoAgent:
             )
 
         start = time.perf_counter()
-        inspection = self._inspect(user_text, candidate, context=combined_context)
+        inspection = self._inspect(user_text, candidate, context=combined_context, user_id=user_id)
         stages["inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if self._should_escalate(candidate, inspection):
             start = time.perf_counter()
             inspection = self._run_inspector(
-                user_text, candidate, thinking=True, context=combined_context,
+                user_text, candidate, thinking=True, context=combined_context, user_id=user_id,
             )
             stages["escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
         if inspection.hard_blocked:
@@ -1790,12 +1842,12 @@ class XiaoliaoAgent:
                 )
 
             start = time.perf_counter()
-            inspection = self._inspect(user_text, candidate, context=combined_context)
+            inspection = self._inspect(user_text, candidate, context=combined_context, user_id=user_id)
             stages["second_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if self._should_escalate(candidate, inspection):
                 start = time.perf_counter()
                 inspection = self._run_inspector(
-                    user_text, candidate, thinking=True, context=combined_context,
+                    user_text, candidate, thinking=True, context=combined_context, user_id=user_id,
                 )
                 stages["second_escalated_inspector_ms"] = max(0, int((time.perf_counter() - start) * 1000))
             if inspection.hard_blocked:

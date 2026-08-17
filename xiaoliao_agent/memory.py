@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import nullcontext
 import hashlib
 import json
 from threading import Lock
@@ -44,6 +45,9 @@ class MemoryCandidate:
     sensitive: bool = False
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+    memory_key: str = ""
+    source_type: str = "conversation"
+    supersedes_memory_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class MemoryService:
         default_max_chars: int = 2000,
         vector_min_score: float = 0.55,
         vector_search_fallback: bool = True,
+        cache_enabled: bool = True,
     ):
         self.repository = repository
         self.vector_index = vector_index or MemoryVectorIndex()
@@ -73,13 +78,19 @@ class MemoryService:
         self.default_max_chars = default_max_chars
         self.vector_min_score = vector_min_score
         self.vector_search_fallback = vector_search_fallback
+        self.cache_enabled = cache_enabled
         self._cache: dict[str, str] = {}
         self._lock = Lock()
+
+    def _privacy_write(self, user_id: str):
+        guard = getattr(self.repository, "privacy_guard", None)
+        return guard.memory_write(user_id) if guard is not None else nullcontext()
 
     def set_consent(self, user_id: str, *, personalization: bool, sensitive: bool = False) -> None:
         if not user_id.strip():
             raise ValueError("user_id is required")
-        self.repository.set_consent(user_id, personalization, sensitive if personalization else False)
+        with self._privacy_write(user_id):
+            self.repository.set_consent(user_id, personalization, sensitive if personalization else False)
         with self._lock:
             self._cache.pop(user_id, None)
 
@@ -88,6 +99,30 @@ class MemoryService:
         return ConsentState(personalization, sensitive)
 
     def save_candidate(self, user_id: str, candidate: MemoryCandidate) -> MemoryRecord:
+        with self._privacy_write(user_id):
+            record = self._build_record(user_id, candidate)
+            saved = self.repository.upsert(record)
+        self._invalidate(user_id, saved.memory_id)
+        return saved
+
+    def save_versioned_candidate(
+        self,
+        user_id: str,
+        candidate: MemoryCandidate,
+    ) -> MemoryRecord:
+        with self._privacy_write(user_id):
+            if not candidate.memory_key.strip() or len(candidate.memory_key) > 128:
+                raise ValueError("memory_key is required")
+            record = self._build_record(user_id, candidate)
+            saved = self.repository.save_versioned(record)
+        self._invalidate(user_id, saved.memory_id)
+        return saved
+
+    def _build_record(
+        self,
+        user_id: str,
+        candidate: MemoryCandidate,
+    ) -> MemoryRecord:
         consent = self.consent_for(user_id)
         if not consent.personalization:
             raise ConsentRequiredError("personalization consent is required")
@@ -106,8 +141,12 @@ class MemoryService:
             raise ValueError("source_message_id is required")
         if candidate.consent_scope != "personalization":
             raise ValueError("invalid consent scope")
+        if candidate.source_type not in {
+            "conversation", "explicit", "correction", "action_event"
+        }:
+            raise ValueError("invalid source type")
         now = datetime.now(timezone.utc)
-        record = MemoryRecord(
+        return MemoryRecord(
             memory_id=uuid.uuid4().hex,
             user_id=user_id,
             memory_type=candidate.memory_type,
@@ -120,13 +159,33 @@ class MemoryService:
             valid_until=candidate.valid_until,
             created_at=now,
             updated_at=now,
+            sensitive=candidate.sensitive,
+            memory_key=candidate.memory_key.strip(),
+            source_type=candidate.source_type,
+            supersedes_memory_id=candidate.supersedes_memory_id,
         )
-        saved = self.repository.upsert(record)
-        self._invalidate(user_id, saved.memory_id)
-        return saved
 
     def view(self, user_id: str) -> list[MemoryRecord]:
-        return self.repository.list_for_user(user_id)
+        return self.list_current(user_id)
+
+    def list_current(
+        self,
+        user_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[MemoryRecord]:
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("invalid pagination")
+        consent = self.consent_for(user_id)
+        if not consent.personalization:
+            return []
+        current = [
+            record
+            for record in self.repository.list_for_user(user_id)
+            if consent.sensitive or not record.sensitive
+        ]
+        return current[offset:offset + limit]
 
     def get_context(
         self,
@@ -142,14 +201,16 @@ class MemoryService:
         vector search is used.  Otherwise the most recent memories are returned
         in update order (lexical fallback).
         """
-        if not self.consent_for(user_id).personalization:
+        consent = self.consent_for(user_id)
+        if not consent.personalization:
             return ""
         limit = self.default_limit if limit is None else limit
         max_chars = self.default_max_chars if max_chars is None else max_chars
         cache_key = f"{user_id}:{query}" if query else user_id
-        with self._lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key][:max_chars]
+        if self.cache_enabled:
+            with self._lock:
+                if cache_key in self._cache:
+                    return self._cache[cache_key][:max_chars]
         records: list[MemoryRecord] = []
         if query and self.embed_client is not None:
             try:
@@ -167,10 +228,13 @@ class MemoryService:
             records = self.repository.list_for_user(user_id)[:limit]
         else:
             records = records[:limit]
+        if not consent.sensitive:
+            records = [record for record in records if not record.sensitive]
         lines = [f"{item.content} [{item.memory_type}]" for item in records]
         context = "\n".join(lines)[:max_chars]
-        with self._lock:
-            self._cache[cache_key] = context
+        if self.cache_enabled:
+            with self._lock:
+                self._cache[cache_key] = context
         return context
 
     def backfill_embedding(self, user_id: str, memory_id: str, vector: list[float]) -> None:
@@ -182,9 +246,35 @@ class MemoryService:
         cleaned = content.strip()
         if not cleaned or len(cleaned) > 1000:
             raise ValueError("memory content length is invalid")
+        original = self.repository.get(user_id, memory_id)
+        if original.memory_key:
+            return self.save_versioned_candidate(
+                user_id,
+                MemoryCandidate(
+                    memory_type=original.memory_type,
+                    content=cleaned,
+                    confidence=1.0,
+                    source_message_id=f"correction:{uuid.uuid4().hex}",
+                    consent_scope=original.consent_scope,
+                    explicitly_stated=True,
+                    sensitive=original.sensitive,
+                    memory_key=original.memory_key,
+                    source_type="correction",
+                    supersedes_memory_id=original.memory_id,
+                ),
+            )
         record = self.repository.correct(user_id, memory_id, cleaned, self._hash(cleaned))
         self._invalidate(user_id, memory_id)
         return record
+
+    def delete_one(self, user_id: str, memory_id: str) -> bool:
+        try:
+            self.repository.get(user_id, memory_id)
+        except KeyError:
+            return False
+        self.repository.soft_delete(user_id, memory_id)
+        self._invalidate(user_id, memory_id)
+        return True
 
     def soft_delete(self, user_id: str, memory_id: str) -> None:
         self.repository.soft_delete(user_id, memory_id)
@@ -200,6 +290,21 @@ class MemoryService:
                 self.hard_delete(user_id, record.memory_id)
             else:
                 self.soft_delete(user_id, record.memory_id)
+
+    def purge_user(self, user_id: str) -> int:
+        records = self.repository.list_for_user(user_id, include_deleted=True)
+        memory_ids = [record.memory_id for record in records]
+        purge = getattr(self.repository, "purge_user", None)
+        if purge is not None:
+            count = int(purge(user_id))
+        else:
+            for memory_id in memory_ids:
+                self.repository.hard_delete(user_id, memory_id)
+            count = len(memory_ids)
+        for memory_id in memory_ids:
+            self.vector_index.delete(memory_id)
+        self._invalidate(user_id, "")
+        return count
 
     def cache_contains(self, user_id: str) -> bool:
         with self._lock:
@@ -237,6 +342,10 @@ class MemoryRecord:
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    sensitive: bool = False
+    memory_key: str = ""
+    supersedes_memory_id: str | None = None
+    source_type: str = "conversation"
 
 
 @dataclass(frozen=True)
@@ -267,14 +376,22 @@ class MemoryVectorIndex:
 
 
 class MemoryMemoryRepository:
-    def __init__(self):
+    def __init__(self, *, privacy_guard: Any | None = None):
         self._rows: dict[str, MemoryRecord] = {}
         self._lock = Lock()
         self.audit_log: list[MemoryAudit] = []
         self._consents: dict[str, tuple[bool, bool]] = {}
+        self.privacy_guard = privacy_guard
+
+    def _write(self, user_id: str):
+        return (
+            self.privacy_guard.memory_write(user_id)
+            if self.privacy_guard is not None
+            else nullcontext()
+        )
 
     def set_consent(self, user_id: str, personalization: bool, sensitive: bool) -> None:
-        with self._lock:
+        with self._write(user_id), self._lock:
             self._consents[user_id] = (personalization, sensitive)
 
     def get_consent(self, user_id: str) -> tuple[bool, bool]:
@@ -282,7 +399,7 @@ class MemoryMemoryRepository:
             return self._consents.get(user_id, (False, False))
 
     def upsert(self, record: MemoryRecord) -> MemoryRecord:
-        with self._lock:
+        with self._write(record.user_id), self._lock:
             for current in self._rows.values():
                 if current.user_id != record.user_id or current.deleted_at is not None:
                     continue
@@ -297,9 +414,29 @@ class MemoryMemoryRepository:
                     current.valid_from = record.valid_from
                     current.valid_until = record.valid_until
                     current.updated_at = record.updated_at
+                    current.sensitive = record.sensitive
                     return current
                 if current.memory_type == record.memory_type and current.content_hash == record.content_hash:
                     return current
+            self._rows[record.memory_id] = record
+            return record
+
+    def save_versioned(self, record: MemoryRecord) -> MemoryRecord:
+        now = datetime.now(timezone.utc)
+        with self._write(record.user_id), self._lock:
+            current = next((
+                item for item in self._rows.values()
+                if item.user_id == record.user_id
+                and item.memory_key == record.memory_key
+                and item.deleted_at is None
+                and item.valid_until is None
+            ), None)
+            if current is not None and current.content_hash == record.content_hash:
+                return current
+            if current is not None:
+                current.valid_until = now
+                current.updated_at = now
+                record.supersedes_memory_id = current.memory_id
             self._rows[record.memory_id] = record
             return record
 
@@ -368,14 +505,29 @@ class MemoryMemoryRepository:
             created_at=datetime.now(timezone.utc).isoformat(),
         ))
 
+    def purge_user(self, user_id: str) -> int:
+        with self._lock:
+            memory_ids = [
+                memory_id for memory_id, record in self._rows.items()
+                if record.user_id == user_id
+            ]
+            for memory_id in memory_ids:
+                self._rows.pop(memory_id, None)
+            self._consents.pop(user_id, None)
+            self.audit_log = [
+                audit for audit in self.audit_log if audit.user_id != user_id
+            ]
+            return len(memory_ids)
+
 
 class PostgresMemoryRepository:
     COLUMNS = (
         "memory_id, user_id, memory_type, content, content_hash, confidence, "
-        "source_message_id, consent_scope, valid_from, valid_until, created_at, updated_at, deleted_at"
+        "source_message_id, consent_scope, valid_from, valid_until, created_at, updated_at, deleted_at, sensitive, "
+        "memory_key, supersedes_memory_id, source_type"
     )
 
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, *, privacy_guard: Any | None = None):
         if not database_url:
             raise ValueError("database URL is required")
         try:
@@ -383,6 +535,12 @@ class PostgresMemoryRepository:
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("psycopg is required") from exc
         self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+        self.privacy_guard = privacy_guard
+
+    def _protect(self, connection: Any, user_id: str) -> None:
+        guard = getattr(self, "privacy_guard", None)
+        if guard is not None:
+            guard.protect_postgres_write(connection, user_id)
 
     @staticmethod
     def _record(row) -> MemoryRecord:
@@ -390,28 +548,51 @@ class PostgresMemoryRepository:
 
     def set_consent(self, user_id: str, personalization: bool, sensitive: bool) -> None:
         with self._connect() as connection:
+            self._protect(connection, user_id)
             connection.execute(
                 """
-                INSERT INTO ai_memory_consents (user_id, personalization, sensitive, updated_at)
-                VALUES (%s, %s, %s, now())
+                INSERT INTO ai_users
+                    (user_id, nickname, birth_year, status, created_at, updated_at)
+                VALUES (%s, '', NULL, 'active', now(), now())
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (user_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO ai_consents
+                    (user_id, personalization, sensitive, version, granted_at, revoked_at, updated_at)
+                VALUES (%s, %s, %s, 'v1',
+                        CASE WHEN %s THEN now() ELSE NULL END,
+                        CASE WHEN %s THEN NULL ELSE now() END,
+                        now())
                 ON CONFLICT (user_id) DO UPDATE SET
                     personalization = EXCLUDED.personalization,
                     sensitive = EXCLUDED.sensitive,
+                    granted_at = CASE
+                        WHEN EXCLUDED.personalization THEN COALESCE(ai_consents.granted_at, now())
+                        ELSE NULL
+                    END,
+                    revoked_at = CASE
+                        WHEN EXCLUDED.personalization THEN NULL
+                        ELSE COALESCE(ai_consents.revoked_at, now())
+                    END,
                     updated_at = now()
                 """,
-                (user_id, personalization, sensitive),
+                (user_id, personalization, sensitive, personalization, personalization),
             )
 
     def get_consent(self, user_id: str) -> tuple[bool, bool]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT personalization, sensitive FROM ai_memory_consents WHERE user_id = %s",
+                "SELECT personalization, sensitive FROM ai_consents WHERE user_id = %s",
                 (user_id,),
             ).fetchone()
         return (bool(row[0]), bool(row[1])) if row else (False, False)
 
     def upsert(self, record: MemoryRecord) -> MemoryRecord:
         with self._connect() as connection:
+            self._protect(connection, record.user_id)
             source_row = connection.execute(
                 f"SELECT {self.COLUMNS} FROM ai_memories WHERE user_id=%s AND memory_type=%s "
                 "AND source_message_id=%s AND consent_scope=%s AND deleted_at IS NULL",
@@ -421,9 +602,11 @@ class PostgresMemoryRepository:
                 memory_id = source_row[0]
                 row = connection.execute(
                     f"UPDATE ai_memories SET content=%s, content_hash=%s, confidence=%s, valid_from=%s, "
-                    f"valid_until=%s, updated_at=%s, embedding=NULL WHERE memory_id=%s RETURNING {self.COLUMNS}",
+                    f"valid_until=%s, updated_at=%s, embedding=NULL, sensitive=%s, memory_key=%s, "
+                    f"source_type=%s WHERE memory_id=%s RETURNING {self.COLUMNS}",
                     (record.content, record.content_hash, record.confidence, record.valid_from,
-                     record.valid_until, record.updated_at, memory_id),
+                     record.valid_until, record.updated_at, record.sensitive,
+                     record.memory_key or None, record.source_type, memory_id),
                 ).fetchone()
                 return self._record(row)
             duplicate = connection.execute(
@@ -435,11 +618,51 @@ class PostgresMemoryRepository:
                 return self._record(duplicate)
             row = connection.execute(
                 f"INSERT INTO ai_memories ({self.COLUMNS}) VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 f"RETURNING {self.COLUMNS}",
                 (record.memory_id, record.user_id, record.memory_type, record.content, record.content_hash,
                  record.confidence, record.source_message_id, record.consent_scope, record.valid_from,
-                 record.valid_until, record.created_at, record.updated_at, record.deleted_at),
+                 record.valid_until, record.created_at, record.updated_at, record.deleted_at,
+                 record.sensitive, record.memory_key or None,
+                 record.supersedes_memory_id, record.source_type),
+            ).fetchone()
+            return self._record(row)
+
+    def save_versioned(self, record: MemoryRecord) -> MemoryRecord:
+        with self._connect() as connection:
+            self._protect(connection, record.user_id)
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"{len(record.user_id)}:{record.user_id}{record.memory_key}",),
+            )
+            current = connection.execute(
+                f"SELECT {self.COLUMNS} FROM ai_memories "
+                "WHERE user_id=%s AND memory_key=%s AND deleted_at IS NULL "
+                "AND valid_until IS NULL FOR UPDATE",
+                (record.user_id, record.memory_key),
+            ).fetchone()
+            if current and current[4] == record.content_hash:
+                return self._record(current)
+            if current:
+                connection.execute(
+                    "UPDATE ai_memories SET valid_until=now(), updated_at=now() "
+                    "WHERE memory_id=%s",
+                    (current[0],),
+                )
+                record.supersedes_memory_id = current[0]
+            row = connection.execute(
+                f"INSERT INTO ai_memories ({self.COLUMNS}) VALUES "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                f"RETURNING {self.COLUMNS}",
+                (
+                    record.memory_id, record.user_id, record.memory_type,
+                    record.content, record.content_hash, record.confidence,
+                    record.source_message_id, record.consent_scope,
+                    record.valid_from, record.valid_until, record.created_at,
+                    record.updated_at, record.deleted_at, record.sensitive,
+                    record.memory_key, record.supersedes_memory_id,
+                    record.source_type,
+                ),
             ).fetchone()
             return self._record(row)
 
@@ -474,6 +697,7 @@ class PostgresMemoryRepository:
 
     def correct(self, user_id: str, memory_id: str, content: str, content_hash: str) -> MemoryRecord:
         with self._connect() as connection:
+            self._protect(connection, user_id)
             row = connection.execute(
                 f"UPDATE ai_memories SET content=%s, content_hash=%s, embedding=NULL, updated_at=now() "
                 f"WHERE user_id=%s AND memory_id=%s AND deleted_at IS NULL RETURNING {self.COLUMNS}",

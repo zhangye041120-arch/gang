@@ -1,6 +1,7 @@
 from dataclasses import dataclass
+from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Any, Protocol
 import uuid
 
 
@@ -49,18 +50,34 @@ class CrisisEventRepository(Protocol):
 
 
 class MemoryCrisisEventRepository:
-    def __init__(self):
+    def __init__(self, *, privacy_guard: Any | None = None):
         self._events: dict[str, CrisisEvent] = {}
+        self.privacy_guard = privacy_guard
 
     def add(self, event: CrisisEvent) -> None:
-        self._events.setdefault(event.event_id, event)
+        guard = (
+            self.privacy_guard.memory_write(event.user_id)
+            if self.privacy_guard is not None
+            else nullcontext()
+        )
+        with guard:
+            self._events.setdefault(event.event_id, event)
 
     def list_events(self) -> list[CrisisEvent]:
         return list(self._events.values())
 
+    def delete_for_user(self, user_id: str) -> int:
+        event_ids = [
+            event_id for event_id, event in self._events.items()
+            if event.user_id == user_id
+        ]
+        for event_id in event_ids:
+            self._events.pop(event_id, None)
+        return len(event_ids)
+
 
 class PostgresCrisisEventRepository:
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, *, privacy_guard: Any | None = None):
         if not database_url:
             raise ValueError("database URL is required")
         try:
@@ -68,9 +85,21 @@ class PostgresCrisisEventRepository:
         except ImportError as exc:  # pragma: no cover - integration dependency
             raise RuntimeError("psycopg is required") from exc
         self._connect = lambda: psycopg.connect(database_url, connect_timeout=5)
+        self.privacy_guard = privacy_guard
 
     def add(self, event: CrisisEvent) -> None:  # pragma: no cover - covered by integration test
         with self._connect() as connection:
+            if self.privacy_guard is not None:
+                self.privacy_guard.protect_postgres_write(connection, event.user_id)
+            connection.execute(
+                """
+                INSERT INTO ai_users
+                    (user_id, nickname, birth_year, status, created_at, updated_at)
+                VALUES (%s, '', NULL, 'active', now(), now())
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (event.user_id,),
+            )
             connection.execute(
                 """
                 INSERT INTO ai_crisis_events

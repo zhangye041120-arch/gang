@@ -97,6 +97,10 @@ def test_from_env_reads_runtime_settings(monkeypatch):
     monkeypatch.setenv("API_MAX_REQUEST_BYTES", "300000")
     monkeypatch.setenv("API_TRUSTED_HOSTS", "agent-api,localhost")
     monkeypatch.setenv("PRIVACY_HMAC_KEY_VERSION", "2026-08")
+    monkeypatch.setenv(
+        "PRIVACY_HMAC_PREVIOUS_KEYS",
+        '{"2026-07":"old-secret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}',
+    )
 
     settings = Settings.from_env()
 
@@ -105,3 +109,71 @@ def test_from_env_reads_runtime_settings(monkeypatch):
     assert settings.api_max_request_bytes == 300000
     assert settings.trusted_hosts == ("agent-api", "localhost")
     assert settings.privacy_hmac_key_version == "2026-08"
+    assert settings.privacy_hmac_previous_keys == {
+        "2026-07": "old-secret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+
+
+@pytest.mark.parametrize(
+    "raw,sensitive_value",
+    [
+        ("not-json", "not-json"),
+        ('[{"version":"v1","secret":"hidden-secret"}]', "hidden-secret"),
+        ('{"v1":42}', '{"v1":42}'),
+    ],
+)
+def test_from_env_rejects_invalid_previous_key_json_without_exposing_it(
+    monkeypatch, raw, sensitive_value
+):
+    monkeypatch.setenv("PRIVACY_HMAC_PREVIOUS_KEYS", raw)
+
+    with pytest.raises(ValueError) as exc_info:
+        Settings.from_env()
+
+    assert "PRIVACY_HMAC_PREVIOUS_KEYS" in str(exc_info.value)
+    assert sensitive_value not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "previous_keys",
+    [
+        {"bad version": "x" * 48},
+        {"v0": "short"},
+        {"v1": "x" * 48},
+        {"v0": "p" * 48},
+        {"v0": "x" * 48, "legacy": "x" * 48},
+        {"v0": "g" * 48},
+    ],
+)
+def test_production_rejects_unsafe_previous_hmac_keys(previous_keys):
+    settings = production_settings(
+        privacy_hmac_previous_keys=previous_keys,
+    )
+
+    with pytest.raises(ProductionConfigurationError) as exc_info:
+        settings.validate_production()
+
+    assert "PRIVACY_HMAC_PREVIOUS_KEYS" in exc_info.value.fields
+    for secret in previous_keys.values():
+        assert secret not in str(exc_info.value)
+
+
+def test_settings_repr_does_not_expose_privacy_hmac_keyring():
+    current_secret = "current-private-" + "x" * 32
+    previous_secret = "previous-private-" + "y" * 32
+    settings = Settings(
+        privacy_hmac_secret=current_secret,
+        privacy_hmac_previous_keys={"v0": previous_secret},
+    )
+
+    assert current_secret not in repr(settings)
+    assert previous_secret not in repr(settings)
+
+
+def test_valid_production_settings_accept_previous_hmac_keys():
+    production_settings(
+        privacy_hmac_previous_keys={
+            "v0": "o" * 48,
+            "legacy": "l" * 48,
+        }
+    ).validate_production()

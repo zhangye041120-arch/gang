@@ -20,9 +20,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from xiaoliao_agent import Settings, XiaoliaoAgent
 from xiaoliao_agent.agent import to_java_intent
+from xiaoliao_agent.content_refs import HmacReferenceService
+from xiaoliao_agent.gateway_auth import (
+    GatewayAuthenticationError,
+    GatewayAuthenticator,
+)
+from xiaoliao_agent.privacy import (
+    PrivacyDeletionService,
+    SubjectDeletedError,
+    SubjectPrivacyGuard,
+)
 from xiaoliao_agent.api_contract import (
+    ActionEventRequest,
+    ActionEventResponse,
     ApiError,
     ApiContractError,
+    PrivacyDeletionResponse,
     V1ChatRequest,
     V1ChatResponse,
     V1DebugInfo,
@@ -33,10 +46,17 @@ from xiaoliao_agent.reminders import (
     DailyCheckinService,
     checkin_policy_from_settings,
 )
+from xiaoliao_agent.actions import (
+    ActionContractError,
+    ActionEvent,
+    ActionEventConflict,
+    ActionMemoryUnavailable,
+)
 from xiaoliao_agent.migrations import verify_schema
 from xiaoliao_agent.providers import OpenAICompatibleClient
 from xiaoliao_agent.runtime import RuntimeReadiness
 from xiaoliao_agent.runtime_state import RedisRuntimeState, RuntimeStateUnavailable
+from xiaoliao_agent.runtime_state import RuntimeSubjectDeleted
 from xiaoliao_agent.text_utils import chunk_by_graphemes
 from xiaoliao_agent.user_data import (
     MemoryUserRepository,
@@ -112,6 +132,17 @@ class DeleteUserRequest(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9_:@.-]+$",
     )
+
+
+class MemoryCorrectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_:@.-]+$",
+    )
+    content: str = Field(min_length=1, max_length=1000)
 
 
 class SlidingWindowRateLimiter:
@@ -259,6 +290,29 @@ def create_app(
             await run_in_threadpool(verify_schema, config.knowledge_database_url)
         app.state.runtime_state = selected_runtime_state
         app.state.agent = factory()
+        reference_service = getattr(app.state.agent, "reference_service", None)
+        if reference_service is None:
+            reference_service = HmacReferenceService(
+                config.privacy_hmac_secret or config.quality_hash_salt,
+                key_version=config.privacy_hmac_key_version,
+                previous_keys=config.privacy_hmac_previous_keys,
+            )
+        app.state.reference_service = reference_service
+        app.state.privacy_guard = getattr(
+            app.state.agent, "privacy_guard", None
+        ) or SubjectPrivacyGuard(reference_service)
+        app.state.gateway_authenticator = None
+        if config.is_production:
+            app.state.gateway_authenticator = GatewayAuthenticator(
+                config.gateway_hmac_secret,
+                selected_runtime_state,
+                clock_skew_seconds=config.gateway_clock_skew_seconds,
+                reference_service=HmacReferenceService(
+                    config.privacy_hmac_secret,
+                    key_version=config.privacy_hmac_key_version,
+                    previous_keys=config.privacy_hmac_previous_keys,
+                ),
+            )
         app.state.rate_limiter = SlidingWindowRateLimiter(
             config.api_rate_limit_per_minute,
             config.api_rate_limit_per_user,
@@ -269,12 +323,43 @@ def create_app(
             app.state.user_data = UserDataService(
                 PostgresUserRepository(config.knowledge_database_url),
                 memory_service=getattr(app.state.agent, "memory_service", None),
+                reference_service=getattr(app.state.agent, "reference_service", None),
             )
         else:
             app.state.user_data = UserDataService(
                 MemoryUserRepository(),
                 memory_service=getattr(app.state.agent, "memory_service", None),
+                reference_service=getattr(app.state.agent, "reference_service", None),
             )
+        for candidate in (
+            getattr(app.state.user_data, "repository", None),
+            getattr(getattr(app.state.agent, "memory_service", None), "repository", None),
+            getattr(getattr(app.state.agent, "action_service", None), "repository", None),
+            getattr(getattr(app.state.agent, "reminder_service", None), "repository", None),
+            getattr(app.state.agent, "crisis_repository", None),
+            getattr(getattr(app.state.agent, "quality_service", None), "repository", None),
+        ):
+            if candidate is not None and hasattr(candidate, "privacy_guard"):
+                candidate.privacy_guard = app.state.privacy_guard
+        app.state.privacy_deletion = PrivacyDeletionService(
+            reference_service=app.state.reference_service,
+            privacy_guard=app.state.privacy_guard,
+            user_data_service=app.state.user_data,
+            memory_service=getattr(app.state.agent, "memory_service", None),
+            action_service=getattr(app.state.agent, "action_service", None),
+            reminder_service=getattr(app.state.agent, "reminder_service", None),
+            crisis_repository=getattr(app.state.agent, "crisis_repository", None),
+            quality_service=getattr(app.state.agent, "quality_service", None),
+            lesson_repository=getattr(app.state.agent, "lesson_repository", None),
+            runtime_state=selected_runtime_state,
+            database_url=(
+                config.knowledge_database_url
+                if config.is_production
+                and isinstance(app.state.user_data.repository, PostgresUserRepository)
+                else ""
+            ),
+            legacy_quality_salt=config.quality_hash_salt,
+        )
         app.state.idempotency = IdempotencyCoordinator()
         app.state.readiness = readiness_service or RuntimeReadiness(
             config,
@@ -333,6 +418,9 @@ def create_app(
     error_responses = {
         401: {"model": ApiError},
         403: {"model": ApiError},
+        410: {"model": ApiError},
+        404: {"model": ApiError},
+        409: {"model": ApiError},
         422: {"model": ApiError},
         429: {"model": ApiError},
         502: {"model": ApiError},
@@ -349,6 +437,43 @@ def create_app(
             raise ApiContractError(401, "AGENT_UNAUTHORIZED")
         principal = sha256(token.encode("utf-8")).hexdigest()[:16]
         is_debug = token_matches_debug
+        return principal, is_debug
+
+    async def authorize_user(
+        request: Request,
+        expected_user_id: str,
+        *,
+        allow_deleted: bool = False,
+    ) -> tuple[str, bool]:
+        if not config.is_production:
+            principal, is_debug = authorize(request)
+        else:
+            _service_principal, is_debug = authorize(request)
+            try:
+                gateway_principal = await app.state.gateway_authenticator.verify(
+                    request,
+                    await request.body(),
+                    expected_user_id,
+                )
+            except GatewayAuthenticationError as exc:
+                raise ApiContractError(401, "AGENT_UNAUTHORIZED") from exc
+            except RuntimeStateUnavailable as exc:
+                raise ApiContractError(
+                    503, "AGENT_RUNTIME_STATE_UNAVAILABLE"
+                ) from exc
+            principal = gateway_principal.subject_hmac
+        if not allow_deleted:
+            try:
+                deleted = await run_in_threadpool(
+                    app.state.privacy_deletion.is_deleted,
+                    expected_user_id,
+                )
+            except Exception as exc:
+                raise ApiContractError(
+                    503, "AGENT_RUNTIME_STATE_UNAVAILABLE"
+                ) from exc
+            if deleted:
+                raise ApiContractError(410, "AGENT_SUBJECT_DELETED")
         return principal, is_debug
 
     def request_id(request: Request) -> str:
@@ -375,6 +500,8 @@ def create_app(
             )
         except RuntimeStateUnavailable as exc:
             raise ApiContractError(503, "AGENT_RUNTIME_STATE_UNAVAILABLE") from exc
+        except RuntimeSubjectDeleted as exc:
+            raise ApiContractError(410, "AGENT_SUBJECT_DELETED") from exc
 
     async def claim_idempotency(
         principal: str,
@@ -397,6 +524,8 @@ def create_app(
             )
         except RuntimeStateUnavailable as exc:
             raise ApiContractError(503, "AGENT_RUNTIME_STATE_UNAVAILABLE") from exc
+        except RuntimeSubjectDeleted as exc:
+            raise ApiContractError(410, "AGENT_SUBJECT_DELETED") from exc
         cached = None
         if claim.decision == "cached":
             cached = (claim.status_code or 200, claim.response or {})
@@ -491,7 +620,7 @@ def create_app(
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     ):
-        authorize(request)
+        await authorize_user(request, payload.user_id)
         rid = request_id(request)
         agent: XiaoliaoAgent = app.state.agent
         history = [item.model_dump() for item in payload.conversation_history]
@@ -536,12 +665,23 @@ def create_app(
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     ):
-        principal, is_debug = authorize(request)
+        principal, is_debug = await authorize_user(request, payload.user_id)
         rid = request_id(request)
         if payload.debug and not is_debug:
             raise ApiContractError(403, "AGENT_DEBUG_FORBIDDEN")
         if not await allow_request(principal, payload.user_id):
             return json_response(429, error_body("AGENT_RATE_LIMITED", rid), rid)
+        effective_personalization, _ = app.state.user_data.effective_consent(
+            payload.user_id,
+            payload.context.consent.personalization,
+            False,
+        )
+        effective_summary = (
+            payload.context.user_summary if effective_personalization else ""
+        )
+        effective_context = payload.context.model_dump()
+        effective_context["consent"]["personalization"] = effective_personalization
+        effective_context["user_summary"] = effective_summary
         history = [item.model_dump() for item in payload.conversation_history]
         idem = request.headers.get("idempotency-key", "")
         executing = False
@@ -565,12 +705,12 @@ def create_app(
                 app.state.agent.chat,
                 payload.message,
                 history,
-                payload.context.user_summary,
+                effective_summary,
                 payload.user_id,
                 payload.session_id,
-                payload.context.consent.personalization,
+                effective_personalization,
                 request_id=rid,
-                context_prefs=payload.context.model_dump(),
+                context_prefs=effective_context,
             )
         except Exception:
             body = error_body("AGENT_MODEL_UNAVAILABLE", rid)
@@ -625,12 +765,24 @@ def create_app(
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     ):
-        principal, is_debug = authorize(request)
+        principal, is_debug = await authorize_user(request, payload.user_id)
         rid = request_id(request)
         if payload.debug and not is_debug:
             raise ApiContractError(403, "AGENT_DEBUG_FORBIDDEN")
         if not await allow_request(principal, payload.user_id):
             return json_response(429, error_body("AGENT_RATE_LIMITED", rid), rid)
+
+        effective_personalization, _ = app.state.user_data.effective_consent(
+            payload.user_id,
+            payload.context.consent.personalization,
+            False,
+        )
+        effective_summary = (
+            payload.context.user_summary if effective_personalization else ""
+        )
+        effective_context = payload.context.model_dump()
+        effective_context["consent"]["personalization"] = effective_personalization
+        effective_context["user_summary"] = effective_summary
 
         history = [item.model_dump() for item in payload.conversation_history]
         idem = request.headers.get("idempotency-key", "")
@@ -661,11 +813,11 @@ def create_app(
                 gen = app.state.agent.chat_stream(
                     payload.message,
                     history,
-                    payload.context.user_summary,
+                    effective_summary,
                     payload.user_id,
                     payload.session_id,
-                    payload.context.consent.personalization,
-                    context_prefs=payload.context.model_dump(),
+                    effective_personalization,
+                    context_prefs=effective_context,
                 )
                 while True:
                     item = await run_in_threadpool(next, gen)
@@ -770,7 +922,7 @@ def create_app(
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     ):
-        authorize(request)
+        await authorize_user(request, payload.user_id)
         rid = request_id(request)
         app.state.user_data.get_or_create_user(payload.user_id)
         app.state.user_data.set_consent(
@@ -796,27 +948,136 @@ def create_app(
         user_id: str = Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_:@.-]+$"),
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     ):
-        authorize(request)
+        await authorize_user(request, user_id)
         rid = request_id(request)
         summary = app.state.user_data.summary(user_id)
         return json_response(200, summary, rid)
 
-    @app.post("/v1/privacy/delete-request", responses=error_responses)
+    def memory_response(record: Any) -> dict[str, Any]:
+        return {
+            "memory_id": record.memory_id,
+            "memory_type": record.memory_type,
+            "memory_key": record.memory_key,
+            "content": record.content,
+            "source_type": record.source_type,
+            "supersedes_memory_id": record.supersedes_memory_id,
+            "sensitive": record.sensitive,
+            "updated_at": record.updated_at.isoformat(),
+        }
+
+    @app.get("/v1/me/memories", responses=error_responses)
+    async def list_memories(
+        request: Request,
+        user_id: str = Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_:@.-]+$"),
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        await authorize_user(request, user_id)
+        rid = request_id(request)
+        service = app.state.user_data.memory_service
+        records = service.list_current(user_id, limit=limit, offset=offset) if service else []
+        return json_response(200, {
+            "items": [memory_response(record) for record in records],
+            "limit": limit,
+            "offset": offset,
+        }, rid)
+
+    @app.patch("/v1/me/memories/{memory_id}", responses=error_responses)
+    async def correct_memory(
+        memory_id: str,
+        payload: MemoryCorrectionRequest,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        await authorize_user(request, payload.user_id)
+        rid = request_id(request)
+        service = app.state.user_data.memory_service
+        try:
+            if service is None:
+                raise KeyError("memory not found")
+            record = service.correct(payload.user_id, memory_id, payload.content)
+        except KeyError as exc:
+            raise ApiContractError(404, "AGENT_MEMORY_NOT_FOUND") from exc
+        return json_response(200, memory_response(record), rid)
+
+    @app.delete("/v1/me/memories/{memory_id}", responses=error_responses)
+    async def delete_memory(
+        memory_id: str,
+        request: Request,
+        user_id: str = Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_:@.-]+$"),
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        await authorize_user(request, user_id)
+        rid = request_id(request)
+        service = app.state.user_data.memory_service
+        if service is None or not service.delete_one(user_id, memory_id):
+            raise ApiContractError(404, "AGENT_MEMORY_NOT_FOUND")
+        return json_response(200, {"status": "deleted"}, rid)
+
+    @app.post(
+        "/v1/privacy/delete-request",
+        response_model=PrivacyDeletionResponse,
+        responses={**error_responses, 202: {"model": PrivacyDeletionResponse}},
+    )
     async def privacy_delete_request(
         payload: DeleteUserRequest,
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     ):
-        authorize(request)
+        await authorize_user(request, payload.user_id, allow_deleted=True)
         rid = request_id(request)
-        app.state.user_data.log_audit(
+        subject_hmac = app.state.reference_service.subject_hmac(payload.user_id)
+        report = await app.state.privacy_deletion.delete_user(
             payload.user_id,
-            action="privacy.delete",
-            resource="user_data",
-            request_id=rid,
+            subject_hmac,
+            uuid.uuid4().hex,
         )
-        app.state.user_data.delete_user(payload.user_id)
-        return json_response(200, {"status": "deleted", "user_id": payload.user_id}, rid)
+        body = {
+            "status": "deleted" if report.status == "completed" else "redis_pending",
+            "subject_hmac": report.subject_hmac,
+            "database_counts": report.database_counts,
+            "redis_cleaned": report.redis_cleaned,
+        }
+        return json_response(200 if report.status == "completed" else 202, body, rid)
+
+    @app.post(
+        "/v1/action-events",
+        response_model=ActionEventResponse,
+        responses=error_responses,
+    )
+    async def action_events(
+        payload: ActionEventRequest,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+    ):
+        await authorize_user(request, payload.user_id)
+        rid = request_id(request)
+        try:
+            recommendation, created = await run_in_threadpool(
+                app.state.agent.action_service.record_event_with_status,
+                ActionEvent(
+                    event_id=payload.event_id,
+                    recommendation_id=payload.recommendation_id,
+                    user_id=payload.user_id,
+                    module=payload.module,
+                    event_type=payload.event_type,
+                    occurred_at=payload.occurred_at,
+                    metadata=payload.metadata.model_dump(exclude_none=True),
+                    request_summary=payload.summary,
+                ),
+            )
+        except ActionEventConflict as exc:
+            raise ApiContractError(409, "AGENT_ACTION_EVENT_CONFLICT") from exc
+        except ActionMemoryUnavailable as exc:
+            raise ApiContractError(503, "AGENT_MEMORY_UNAVAILABLE") from exc
+        except ActionContractError as exc:
+            raise ApiContractError(409, "AGENT_ACTION_EVENT_INVALID") from exc
+        return json_response(200, {
+            "status": "ok",
+            "recommendation_id": recommendation.recommendation_id,
+            "duplicate": not created,
+        }, rid)
 
     @app.get("/v1/knowledge/search", responses=error_responses)
     async def v1_knowledge_search(

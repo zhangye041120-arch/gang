@@ -290,7 +290,7 @@ def test_action_event_mapping_accepts_four_modules_and_rejects_unknown():
 def test_action_event_duplicate_is_idempotent_without_new_memory():
     memory_repository = MemoryMemoryRepository()
     memory = MemoryService(memory_repository)
-    memory.set_consent("u", personalization=True)
+    memory.set_consent("u", personalization=True, sensitive=True)
     repository = MemoryActionRepository()
     service = ActionService(repository, memory_service=memory)
     recommendation = service.recommend("u", "s", valid_action("M1"), source_message_id="src-2")
@@ -315,6 +315,8 @@ def test_action_event_duplicate_is_idempotent_without_new_memory():
     first = handle_action_event(service, payload)
     second = handle_action_event(service, payload)
     assert first["status"] == second["status"] == "ok"
+    assert first["duplicate"] is False
+    assert second["duplicate"] is True
     assert len(memory.view("u")) == 1
 
 

@@ -1,4 +1,6 @@
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -55,7 +57,7 @@ def test_postgres_memory_consent_write_correct_and_delete_round_trip():
             "SELECT column_name FROM information_schema.columns WHERE table_name='ai_memory_audit'"
         ).fetchall()
         connection.execute("DELETE FROM ai_memory_audit WHERE user_id=%s", (user_id,))
-        connection.execute("DELETE FROM ai_memory_consents WHERE user_id=%s", (user_id,))
+        connection.execute("DELETE FROM ai_users WHERE user_id=%s", (user_id,))
     assert "content" not in {row[0] for row in audit_columns}
 
 
@@ -93,4 +95,41 @@ def test_postgres_memory_embedding_round_trip_and_vector_search():
     service.hard_delete(user_id, record.memory_id)
     with psycopg.connect(DATABASE_URL) as connection:
         connection.execute("DELETE FROM ai_memory_audit WHERE user_id=%s", (user_id,))
-        connection.execute("DELETE FROM ai_memory_consents WHERE user_id=%s", (user_id,))
+        connection.execute("DELETE FROM ai_users WHERE user_id=%s", (user_id,))
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="KNOWLEDGE_DATABASE_URL 未配置")
+def test_postgres_versioned_memory_serializes_first_concurrent_writes():
+    psycopg = pytest.importorskip("psycopg")
+    user_id = f"memory-version-{uuid.uuid4().hex}"
+    repository = PostgresMemoryRepository(DATABASE_URL)
+    service = MemoryService(repository)
+    service.set_consent(user_id, personalization=True)
+    barrier = Barrier(6)
+
+    def save(index):
+        barrier.wait()
+        return service.save_versioned_candidate(
+            user_id,
+            MemoryCandidate(
+                memory_type="profile",
+                content=f"并发版本 {index}",
+                confidence=1.0,
+                source_message_id=f"concurrent-{index}",
+                memory_key="profile.concurrent",
+                source_type="explicit",
+                explicitly_stated=True,
+            ),
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            records = list(executor.map(save, range(6)))
+
+        assert len({record.memory_id for record in records}) == 6
+        assert len(repository.list_for_user(user_id)) == 1
+        assert len(repository.list_for_user(user_id, include_deleted=True)) == 6
+    finally:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute("DELETE FROM ai_memory_audit WHERE user_id=%s", (user_id,))
+            connection.execute("DELETE FROM ai_users WHERE user_id=%s", (user_id,))
