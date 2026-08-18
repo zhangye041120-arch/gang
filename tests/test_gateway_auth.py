@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-import api_server
-from api_server import create_app
+import API服务
+from API服务 import create_app
 from tests.test_api_runtime_state import RecordingAgent
 from tests.test_production_config import production_settings
 from xiaoliao_agent.user_data import MemoryUserRepository, UserDataService
@@ -244,7 +244,7 @@ def api_signed_headers(
 
 
 def production_app(monkeypatch, runtime_state, agent):
-    monkeypatch.setattr(api_server, "verify_schema", lambda _url: None)
+    monkeypatch.setattr(API服务, "verify_schema", lambda _url: None)
     return create_app(
         lambda: agent,
         settings=production_settings(),

@@ -74,7 +74,7 @@ def test_runtime_and_dev_requirements_are_separate_hash_locks():
 
 
 def test_api_runner_uses_production_worker_and_timeout_settings():
-    runner = read("run_api.py")
+    runner = read("启动API.py")
 
     assert "settings.api_workers" in runner
     assert "settings.api_graceful_shutdown_seconds" in runner

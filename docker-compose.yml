@@ -77,14 +77,14 @@ services:
   migrate:
     <<: *agent-service
     restart: "no"
-    command: ["python", "migrate_database.py"]
+    command: ["python", "迁移数据库.py"]
     depends_on:
       postgres:
         condition: service_healthy
 
   agent-api:
     <<: *agent-service
-    command: ["python", "run_api.py"]
+    command: ["python", "启动API.py"]
     environment:
       <<: *agent-environment
       WECOM_CHECKIN_REMINDER_ENABLED: "false"
@@ -107,7 +107,7 @@ services:
 
   checkin-worker:
     <<: *agent-service
-    command: ["python", "checkin_worker.py"]
+    command: ["python", "签到提醒Worker.py"]
     environment:
       <<: *agent-environment
       WECOM_CHECKIN_REMINDER_ENABLED: "true"

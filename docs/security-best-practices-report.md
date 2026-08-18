@@ -23,7 +23,7 @@
 
 - **Rule ID:** FASTAPI-AUTHZ-001
 - **Severity:** High
-- **Location:** `api_server.py:309-318`, `api_server.py:665-690`
+- **Location:** `API服务.py:309-318`, `API服务.py:665-690`
 - **Evidence:** `authorize()` 只验证全局 API/debug Token；`/v1/me/summary` 从 query 取任意 `user_id`，隐私删除从 body 取任意 `user_id`，没有将调用方与用户绑定。
 - **Impact:** 一旦服务 Token 泄露或内网调用方被滥用，攻击者可查看或删除其他用户数据。
 - **Fix:** API 仅限内网；在 Bearer 服务身份外增加带 `user_id`、body 指纹、时间戳和 nonce 的网关 HMAC 签名；对比签名主体与资源用户。
@@ -34,7 +34,7 @@
 
 - **Rule ID:** PRIVACY-DELETE-001
 - **Severity:** High
-- **Location:** `api_server.py:675-690`, `xiaoliao_agent/user_data.py:255-258`, `xiaoliao_agent/user_data.py:359-363`
+- **Location:** `API服务.py:675-690`, `xiaoliao_agent/user_data.py:255-258`, `xiaoliao_agent/user_data.py:359-363`
 - **Evidence:** API 先写 `privacy.delete` 审计再调用 `delete_user`；PostgreSQL 仓库随后删除该用户的全部 `ai_audit_logs`。当前删除只编排用户/授权/会话事件和长期记忆，未覆盖行动、危机、提醒、质量日志与 Redis 缓存。
 - **Impact:** 用户收到“已删除”但关联数据仍可留存；同时无法证明删除何时、删了什么。
 - **Fix:** 使用专用删除编排服务和带计数的数据库事务；清理全部用户表与 Redis key；只保留无原始 user ID 的 HMAC 删除审计。
@@ -58,7 +58,7 @@
 
 - **Rule ID:** PRIVACY-CONSENT-001
 - **Severity:** Medium
-- **Location:** `api_server.py:458-463`, `api_server.py:547-551`
+- **Location:** `API服务.py:458-463`, `API服务.py:547-551`
 - **Evidence:** `/v1/chat` 和流式端点直接将请求体中的 `user_summary` 和 `context.consent.personalization` 传给 Agent，没有先读取服务端授权。
 - **Impact:** 网关错误或被滥用时，未授权的用户摘要可被发给模型；授权执行不一致。
 - **Fix:** 数据库授权是唯一真值；请求只能申请使用已授权能力，不能提升权限。未授权时丢弃 summary。
@@ -69,7 +69,7 @@
 
 - **Rule ID:** AVAILABILITY-STATE-001
 - **Severity:** Medium
-- **Location:** `api_server.py:113-172`, `api_server.py:237-253`
+- **Location:** `API服务.py:113-172`, `API服务.py:237-253`
 - **Evidence:** 限流使用本地 dict/list，幂等使用本地 dict 和 `asyncio.Condition`，且结果没有 TTL 删除。
 - **Impact:** 多 worker 可绕过限流或重复调用模型/产生副作用；长期运行的幂等 key 无界增长。
 - **Fix:** 使用 Redis 原子脚本/事务实现共享限流、执行锁和幂等结果 TTL。
@@ -80,7 +80,7 @@
 
 - **Rule ID:** FASTAPI-OPENAPI-001 / FASTAPI-HOST-001 / FASTAPI-REQSIZE-001
 - **Severity:** Medium
-- **Location:** `api_server.py:292-298`, `api_server.py:367-375`
+- **Location:** `API服务.py:292-298`, `API服务.py:367-375`
 - **Evidence:** FastAPI 使用默认 docs/openapi 路径；没有 TrustedHost 和请求体上限；`/health` 公开返回模型 ID 和知识块数量。
 - **Impact:** 增加内部合同暴露和 Host/request-body DoS 攻击面；健康接口可泄露部署细节。
 - **Fix:** 生产禁用 docs/openapi，启用 Host 白名单和请求体限制，拆分最小 live/ready 响应。
@@ -102,7 +102,7 @@
 
 - **Rule ID:** FASTAPI-SUPPLY-001 / FASTAPI-DEPLOY-001
 - **Severity:** Medium
-- **Location:** `requirements.txt:1-8`, `docker-compose.yml:1-22`, `run_api.py:12`
+- **Location:** `requirements.txt:1-8`, `docker-compose.yml:1-22`, `启动API.py:12`
 - **Evidence:** 所有 Python 依赖只设最低版本，运行和测试依赖混合；Compose 只包含数据库；没有应用 Dockerfile/迁移服务/非 root 验证；生产进程模型没有被固化。
 - **Impact:** 相同代码在不同时间可安装不同依赖；无法生成可重复、可扫描、可回滚的发布制品。
 - **Fix:** 拆分并精确锁定依赖，增加非 root Dockerfile、Redis/migrate/API Compose 服务和 CI 依赖/镜像扫描。
@@ -113,7 +113,7 @@
 
 - **Rule ID:** AVAILABILITY-READINESS-001
 - **Severity:** Medium
-- **Location:** `api_server.py:367-375`, `xiaoliao_agent/agent.py:485-493`
+- **Location:** `API服务.py:367-375`, `xiaoliao_agent/agent.py:485-493`
 - **Evidence:** `/health` 无条件返回 `status=ok`；Agent 可能已经回退内存库。
 - **Impact:** 调度器继续将流量发往无法持久化的实例，监控也无法发现数据风险。
 - **Fix:** 拆分 liveness/readiness；readiness 验证 PostgreSQL、Redis、schema、关键配置和知识库。
@@ -125,7 +125,8 @@
 ### REL-001 外部上线证据尚未完成
 
 - **Severity:** Release blocker
-- **Location:** `docs/上线前置动作清单.md:32-105`
+- **Location:** `docs/运营流程与上线清单.md` 的“小辽 M7 上线前置动作清单”
+- **Location:** `docs/运营流程与上线清单.md` 的“小辽 M7 上线前置动作清单”
 - **Evidence:** 真实 7 天灰度、企微消息闭环、危机转介/演练、监控阈值、Java action 冻结和发布包安全都被列为待执行动作。
 - **Impact:** 即使代码完成，仍不能宣称已正式上线。
 - **Fix:** 完成代码上线候选后，由 Java/企微、安全、运营和隐私负责人提供真实证据并签字。

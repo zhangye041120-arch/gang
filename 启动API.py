@@ -11,7 +11,7 @@ def main() -> int:
         raise RuntimeError("API_TOKEN 未配置，生产 API 拒绝启动")
     host = "0.0.0.0" if settings.is_production else "127.0.0.1"
     uvicorn.run(
-        "api_server:app",
+        "API服务:app",
         host=host,
         port=settings.api_port,
         workers=settings.api_workers if settings.is_production else 1,

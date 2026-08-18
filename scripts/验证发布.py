@@ -33,13 +33,13 @@ def main() -> int:
         text=True,
     ).stdout
     assert_clean_worktree(status)
-    run([sys.executable, "generate_openapi.py", "--check"])
-    run([sys.executable, "-m", "compileall", "-q", "xiaoliao_agent", "api_server.py"])
+    run([sys.executable, "生成OpenAPI.py", "--check"])
+    run([sys.executable, "-m", "compileall", "-q", "xiaoliao_agent", "API服务.py"])
     run(["docker", "compose", "config", "-q"])
     if args.gate:
         run([sys.executable, "-m", "pytest", "-q", "--tb=short"])
-        run([sys.executable, "run_eval_suite.py", "--offline", "--gate", "--out", str(ROOT / "eval_runs")])
-        run([sys.executable, "run_rag_eval.py", "--offline", "--gate", "--output", str(ROOT / "rag_runs")])
+        run([sys.executable, "运行评估套件.py", "--offline", "--gate", "--out", str(ROOT / "eval_runs")])
+        run([sys.executable, "运行RAG评估.py", "--offline", "--gate", "--output", str(ROOT / "rag_runs")])
         run(["pip-audit", "--no-deps", "--disable-pip", "-r", "requirements.txt"])
         tracked = subprocess.run(
             ["git", "ls-files"], cwd=ROOT, check=True,

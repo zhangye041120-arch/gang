@@ -23,7 +23,7 @@ xiaoliao_agent/
 ├── tests/                         # 本地测试
 ├── .env.example                   # 模型配置模板
 ├── requirements.txt
-└── 运行/run_agent.py              # 交互式命令行入口
+└── 运行/启动Agent.py              # 交互式命令行入口
 ```
 
 ## 1. 安装
@@ -75,7 +75,7 @@ INSPECTOR_ENABLE_THINKING=false
 ## 3. 开始在线对话
 
 ```bash
-python 运行/run_agent.py
+python 运行/启动Agent.py
 ```
 
 Windows 也可以直接双击：
@@ -87,8 +87,8 @@ Windows 也可以直接双击：
 单句测试：
 
 ```bash
-python 运行/run_agent.py --message "我最近什么都不想做"
-python 运行/run_agent.py --stream --message "我最近什么都不想做"
+python 运行/启动Agent.py --message "我最近什么都不想做"
+python 运行/启动Agent.py --stream --message "我最近什么都不想做"
 ```
 
 `--stream` 使用安全流式输出：主模型和 Inspector 全部通过后，回复按 4 字符片段逐段
@@ -97,7 +97,7 @@ python 运行/run_agent.py --stream --message "我最近什么都不想做"
 调试检索来源和质检结果：
 
 ```bash
-python 运行/run_agent.py --debug
+python 运行/启动Agent.py --debug
 ```
 
 ## 4. 接下来如何接 Java
@@ -140,7 +140,7 @@ python 运行/run_agent.py --debug
 知识库按 Markdown 二级到四级标题分节，正文超过 1800 字符时按 1800 字符切分并保留 180 字符重叠；chunk 使用稳定内容哈希去重。当前知识库只保留
 `knowledge/CBT知识库_Agent版.md` 与 `knowledge/lessons.md` 两个来源。
 
-RAG 评估用例见项目根目录 `rag_cases.json`，运行 `python run_rag_eval.py --offline`
+RAG 评估用例见项目根目录 `rag_cases.json`，运行 `python 运行RAG评估.py --offline`
 验证；指标是 expected_terms 命中率，不是人工语义准确率。
 
 延迟配置：
@@ -184,7 +184,7 @@ RAG_PARALLEL_ENABLED=true
   拦截并给出防骗提示。
 
 知识库导入与向量回填仍使用：
-`python import_knowledge.py`、`python backfill_embeddings.py`，默认只处理
+`python 导入知识库.py`、`python scripts/运维工具.py backfill-knowledge`，默认只处理
 CBT 知识库与 lessons.md。
 
 ## 5.3 企微员工群每日签到提醒
@@ -204,7 +204,7 @@ CBT 知识库与 lessons.md。
 时间点幂等，发送失败不记录成功并在补发窗口内重试。手动验证：
 
 ```bash
-python 运行/run_checkin_reminder.py --once
+python 运行/签到提醒.py --once
 ```
 
 ## 6. 重要边界
@@ -237,8 +237,8 @@ docker compose exec agent-api python -c "import urllib.request; print(urllib.req
 ### 发布检查
 
 ```bash
-python scripts/verify_release.py --check
-python scripts/verify_release.py --gate
+python scripts/验证发布.py --check
+python scripts/验证发布.py --gate
 ```
 
 `--gate` 只验证可自动化项目。真实模型预算、7 天灰度、企微闭环、危机演练和
@@ -250,9 +250,9 @@ Java 合同仍须负责人提供外部证据。
 使用 age 加密并原子落盘。
 
 ```bash
-python scripts/backup_database.py --destination /secure/backups --age-recipient age1...
+python scripts/备份数据库.py --destination /secure/backups --age-recipient age1...
 AGE_IDENTITY_FILE=/secure/keys/backup.agekey \
-python scripts/restore_database.py \
+python scripts/恢复数据库.py \
   --backup /secure/backups/xiaoliao-20260817T000000Z.dump.age \
   --target-database xiaoliao_restore_drill \
   --confirm-target xiaoliao_restore_drill

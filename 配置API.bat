@@ -3,8 +3,8 @@ chcp 65001 >nul
 cd /d "%~dp0"
 where py >nul 2>nul
 if %errorlevel%==0 (
-  py -3 api_tools.py configure
+  py -3 scripts\运维工具.py configure
 ) else (
-  python api_tools.py configure
+  python scripts\运维工具.py configure
 )
 pause

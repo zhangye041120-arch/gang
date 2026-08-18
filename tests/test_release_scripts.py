@@ -26,8 +26,8 @@ def test_ci_uses_immutable_actions_and_all_release_checks():
     assert uses
     assert all(len(value.rsplit("@", 1)[-1]) == 40 for value in uses)
     for required in (
-        "pytest", "compileall", "run_eval_suite.py --offline --gate",
-        "run_rag_eval.py --offline --gate", "generate_openapi.py --check",
+        "pytest", "compileall", "运行评估套件.py --offline --gate",
+        "运行RAG评估.py --offline --gate", "生成OpenAPI.py --check",
         "pip-audit", "detect-secrets", "docker build --check",
         "docker build",
     ):
@@ -38,8 +38,8 @@ def test_ci_uses_immutable_actions_and_all_release_checks():
 
 
 def test_backup_and_restore_validate_paths_and_target_database(tmp_path):
-    from scripts.backup_database import validate_destination
-    from scripts.restore_database import validate_restore
+    from scripts.备份数据库 import validate_destination
+    from scripts.恢复数据库 import validate_restore
 
     destination = tmp_path / "backups"
     destination.mkdir()
@@ -58,9 +58,9 @@ def test_backup_and_restore_validate_paths_and_target_database(tmp_path):
 
 def test_release_scripts_use_argument_subprocess_without_shell():
     for name in (
-        "scripts/backup_database.py",
-        "scripts/restore_database.py",
-        "scripts/verify_release.py",
+        "scripts/备份数据库.py",
+        "scripts/恢复数据库.py",
+        "scripts/验证发布.py",
     ):
         source = read(name)
         assert "subprocess.run(" in source
@@ -68,18 +68,18 @@ def test_release_scripts_use_argument_subprocess_without_shell():
 
 
 def test_release_gate_rejects_dirty_or_untracked_artifacts():
-    from scripts.verify_release import assert_clean_worktree
+    from scripts.验证发布 import assert_clean_worktree
 
     assert_clean_worktree("")
     with pytest.raises(RuntimeError):
-        assert_clean_worktree(" M api_server.py")
+        assert_clean_worktree(" M API服务.py")
     with pytest.raises(RuntimeError):
         assert_clean_worktree("?? untracked.txt")
 
 
 def test_openapi_check_mode_matches_frozen_file():
     result = subprocess.run(
-        [sys.executable, "generate_openapi.py", "--check"],
+        [sys.executable, "生成OpenAPI.py", "--check"],
         cwd=ROOT,
         capture_output=True,
         text=True,

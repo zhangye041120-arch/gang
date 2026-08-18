@@ -4,7 +4,7 @@ import logging
 from fastapi.testclient import TestClient
 from prometheus_client import CollectorRegistry
 
-from api_server import create_app
+from API服务 import create_app
 from tests.test_api_runtime_state import RecordingAgent
 from xiaoliao_agent.observability import Metrics, Telemetry, configure_logging
 

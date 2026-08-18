@@ -51,18 +51,18 @@ jobs:
         run: python -m pip install --require-hashes -r requirements-dev.txt
       - name: Migrate and seed knowledge
         run: |
-          python migrate_database.py
-          python import_knowledge.py
+          python 迁移数据库.py
+          python 导入知识库.py
       - name: Tests
         run: python -m pytest -q --tb=short
       - name: Compile
-        run: python -m compileall -q xiaoliao_agent api_server.py scripts
+        run: python -m compileall -q xiaoliao_agent API服务.py scripts
       - name: Offline agent gate
-        run: python run_eval_suite.py --offline --gate --out /tmp/eval-runs
+        run: python 运行评估套件.py --offline --gate --out /tmp/eval-runs
       - name: Offline RAG gate
-        run: python run_rag_eval.py --offline --gate --output /tmp/rag-runs
+        run: python 运行RAG评估.py --offline --gate --output /tmp/rag-runs
       - name: Frozen OpenAPI
-        run: python generate_openapi.py --check
+        run: python 生成OpenAPI.py --check
       - name: Dependency audit
         run: pip-audit --no-deps --disable-pip -r requirements.txt
       - name: Secret scan

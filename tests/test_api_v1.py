@@ -4,7 +4,7 @@ import threading
 
 from fastapi.testclient import TestClient
 
-from api_server import create_app
+from API服务 import create_app
 from tests.test_agent_pipeline import FakeInspectorClient, FakeMainClient
 from tests.test_main_agent import ChatOnlyMainClient
 from xiaoliao_agent.agent import XiaoliaoAgent

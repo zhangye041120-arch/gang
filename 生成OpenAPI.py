@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from api_server import app
+from API服务 import app
 
 
 def main() -> int:

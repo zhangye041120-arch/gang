@@ -246,7 +246,7 @@ def test_real_model_evaluation_requires_explicit_approval():
 def test_offline_cli_writes_immutable_run_without_models():
     with tempfile.TemporaryDirectory() as tmp:
         proc = subprocess.run(
-            [sys.executable, "run_eval_suite.py", "--offline", "--out", tmp],
+            [sys.executable, "运行评估套件.py", "--offline", "--out", tmp],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -264,7 +264,7 @@ def test_offline_cli_writes_immutable_run_without_models():
 def test_real_cli_refuses_without_approval_before_calling_models():
     with tempfile.TemporaryDirectory() as tmp:
         proc = subprocess.run(
-            [sys.executable, "run_eval_suite.py", "--direct", "--out", tmp],
+            [sys.executable, "运行评估套件.py", "--direct", "--out", tmp],
             capture_output=True,
             text=True,
             encoding="utf-8",

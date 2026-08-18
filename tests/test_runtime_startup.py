@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 import pytest
 
-import api_server
-from api_server import create_app
+import API服务
+from API服务 import create_app
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.runtime import ReadinessResult
@@ -86,7 +86,7 @@ def test_default_factory_uses_create_app_settings(monkeypatch):
             super().__init__()
             captured.append(settings)
 
-    monkeypatch.setattr(api_server, "XiaoliaoAgent", CapturingAgent)
+    monkeypatch.setattr(API服务, "XiaoliaoAgent", CapturingAgent)
     settings = Settings(
         app_env="test",
         deepseek_api_key="main",

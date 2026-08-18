@@ -1,8 +1,8 @@
 """RAG专项评估：衡量检索召回率、命中率和排序质量。
 
 Usage:
-    python run_rag_eval.py                          # 离线评估
-    python run_rag_eval.py --real --approved-by "负责人"  # 含 embedding 的完整评估
+    python 运行RAG评估.py                          # 离线评估
+    python 运行RAG评估.py --real --approved-by "负责人"  # 含 embedding 的完整评估
 """
 
 import argparse

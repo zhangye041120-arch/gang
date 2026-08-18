@@ -22,4 +22,4 @@ COPY . .
 RUN chown -R 10001:10001 /app
 USER 10001:10001
 EXPOSE 8081
-CMD ["python", "run_api.py"]
+CMD ["python", "启动API.py"]

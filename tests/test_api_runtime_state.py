@@ -1,7 +1,7 @@
 import fakeredis.aioredis
 from fastapi.testclient import TestClient
 
-from api_server import create_app
+from API服务 import create_app
 from xiaoliao_agent.api_contract import AgentResult, InspectionResult
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.runtime_state import RedisRuntimeState, RuntimeStateUnavailable

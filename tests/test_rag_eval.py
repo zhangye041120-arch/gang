@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from run_rag_eval import evaluate_offline, load_rag_cases, save_rag_run
+from 运行RAG评估 import evaluate_offline, load_rag_cases, save_rag_run
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.knowledge import KnowledgeBase
 

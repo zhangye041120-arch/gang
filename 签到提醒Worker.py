@@ -10,7 +10,7 @@ from xiaoliao_agent.observability import configure_logging
 from xiaoliao_agent.reminders import DailyCheckinService, checkin_policy_from_settings
 
 
-logger = logging.getLogger("xiaoliao.checkin_worker")
+logger = logging.getLogger("xiaoliao.签到提醒Worker")
 
 
 class RedisCheckinRepository:

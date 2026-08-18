@@ -10,9 +10,9 @@ import tempfile
 from urllib.parse import urlsplit
 
 try:
-    from scripts.backup_database import BACKUP_NAME, pg_environment
-except ModuleNotFoundError:  # Direct `python scripts/restore_database.py` execution.
-    from backup_database import BACKUP_NAME, pg_environment
+    from scripts.备份数据库 import BACKUP_NAME, pg_environment
+except ModuleNotFoundError:  # Direct `python scripts/恢复数据库.py` execution.
+    from 备份数据库 import BACKUP_NAME, pg_environment
 
 
 DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}$")

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from api_server import create_app, normalize_intent
+from API服务 import create_app, normalize_intent
 from xiaoliao_agent.agent import XiaoliaoAgent
 from xiaoliao_agent.config import Settings
 from xiaoliao_agent.guardrails import CRISIS_FALLBACK
