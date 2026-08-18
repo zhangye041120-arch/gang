@@ -25,7 +25,7 @@ def log(request_id="req-1", **overrides):
         "issues": [],
         "latency_ms": 10,
         "main_model": "deepseek-v4-flash",
-        "inspector_model": "qwen3.7-flash-2026-07-15",
+        "inspector_model": "qwen3.7-flash",
         "prompt_version": "1.2.0",
         "input_tokens": None,
         "output_tokens": None,

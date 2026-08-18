@@ -73,7 +73,7 @@ class Settings:
     deepseek_model: str = "deepseek-v4-flash"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_api_key: str = ""
-    qwen_model: str = "qwen3.7-flash-2026-07-15"
+    qwen_model: str = "qwen3.7-flash"
     temperature: float = 0.3
     max_tokens: int = 800
     inspector_max_tokens: int = 256
@@ -85,7 +85,7 @@ class Settings:
     web_search_enabled: bool = True
     web_search_provider: str = "dashscope"
     web_search_api_key: str = ""
-    web_search_dashscope_model: str = "qwen3.7-flash-2026-07-15"
+    web_search_dashscope_model: str = "qwen3.7-flash"
     web_search_forced_search: bool = False
     web_search_timeout_seconds: float = 45.0
     web_search_max_results: int = 5
@@ -204,7 +204,7 @@ class Settings:
             web_search_enabled=os.getenv("WEB_SEARCH_ENABLED", "true").strip().lower() == "true",
             web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "dashscope"),
             web_search_api_key=os.getenv("WEB_SEARCH_API_KEY", ""),
-            web_search_dashscope_model=os.getenv("WEB_SEARCH_DASHSCOPE_MODEL", "qwen3.7-flash-2026-07-15"),
+            web_search_dashscope_model=os.getenv("WEB_SEARCH_DASHSCOPE_MODEL", "qwen3.7-flash"),
             web_search_forced_search=os.getenv("WEB_SEARCH_FORCED_SEARCH", "false").strip().lower() == "true",
             web_search_timeout_seconds=float(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "45")),
             web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),

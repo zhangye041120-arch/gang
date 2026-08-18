@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 ```env
 DEEPSEEK_MODEL=deepseek-v4-flash
-QWEN_MODEL=qwen3.7-flash-2026-07-15
+QWEN_MODEL=qwen3.7-flash
 INSPECTOR_ENABLE_THINKING=false
 ```
 
@@ -56,7 +56,7 @@ INSPECTOR_ENABLE_THINKING=false
 ### 模型组合建议
 
 主模型固定为 `deepseek-v4-flash`（用户确认不更换）。副模型继续使用
-`qwen3.7-flash-2026-07-15`，但必须显式设置 `INSPECTOR_ENABLE_THINKING=false`：
+`qwen3.7-flash`，但必须显式设置 `INSPECTOR_ENABLE_THINKING=false`：
 
 - Qwen3.7 系列默认开启思考模式，Inspector 延迟实测约 5-16 秒，是全链路主要瓶颈。
 - Inspector 只做结构化安全质检（危机、医疗边界、意图、适老），不需要长思考链，
@@ -164,7 +164,7 @@ RAG_PARALLEL_ENABLED=true
 - 天气、附近地点、农历/节气/节假日、新闻简讯、药品通用科普：构造检索词后走
   `WEB_SEARCH_PROVIDER`。默认 `dashscope`，复用现有 `QWEN_API_KEY`，通过百炼
   OpenAI 兼容 Chat Completions 的 `enable_search` 开启内置联网搜索
-  （模型 `WEB_SEARCH_DASHSCOPE_MODEL`，默认 `qwen3.7-flash-2026-07-15`）；
+  （模型 `WEB_SEARCH_DASHSCOPE_MODEL`，默认 `qwen3.7-flash`）；
   也可换成 `serper` / `brave` / `tavily`。默认城市 `LIVE_DEFAULT_CITY`（默认沈阳）
 - 查询结果作为“不可信参考资料”注入主模型，最后仍经过安全质检
 - `WEB_SEARCH_API_KEY` 未配置时，联网类问题自动降级为“看不到实时信息”，不报错；

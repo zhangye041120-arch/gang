@@ -78,7 +78,7 @@ def test_dashscope_web_search_uses_qwen_key_and_parses_answer():
         body = json.loads(request.content)
         assert body["enable_search"] is True
         assert body["search_options"]["forced_search"] is False
-        assert body["model"] == "qwen3.7-flash-2026-07-15"
+        assert body["model"] == "qwen3.7-flash"
         # freshness=7 maps to valid DashScope value 7
         assert body["search_options"]["freshness"] == 7
         return httpx.Response(200, json={
